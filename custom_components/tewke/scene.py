@@ -51,8 +51,8 @@ class TewkeSceneEntity(TewkeEntity):
         super().__init__(coordinator)
         self._scene_id = scene.id
         self._attr_name = scene.name
-        entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_{scene.id}"
+        hardware_id = coordinator.data["config"].hardware_id
+        self._attr_unique_id = f"{hardware_id}_{scene.id}"
         self._is_on = scene.is_active
         self._brightness: int | None = scene.brightness
         self._attr_entity_registry_enabled_default = enabled_default

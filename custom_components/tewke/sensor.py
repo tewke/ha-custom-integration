@@ -198,10 +198,8 @@ class TewkeSensor(TewkeEntity, SensorEntity):
         """Initialise the sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        entry = coordinator.config_entry
-        self._attr_unique_id = (
-            f"{entry.unique_id or entry.entry_id}_sensor_{description.key}"
-        )
+        hardware_id = coordinator.data["config"].hardware_id
+        self._attr_unique_id = f"{hardware_id}_sensor_{description.key}"
 
     @property
     def native_value(self) -> float | int | None:
@@ -271,8 +269,8 @@ class TewkeRadarSensor(TewkeEntity, SensorEntity):
         """Initialise the radar sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_{description.key}"
+        hardware_id = coordinator.data["config"].hardware_id
+        self._attr_unique_id = f"{hardware_id}_{description.key}"
 
     @property
     def native_value(self) -> str | int | None:
@@ -326,8 +324,8 @@ class TewkeEnergySensor(TewkeEntity, SensorEntity):
         """Initialise the energy sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_{description.key}"
+        hardware_id = coordinator.data["config"].hardware_id
+        self._attr_unique_id = f"{hardware_id}_{description.key}"
 
     @property
     def native_value(self) -> float | None:

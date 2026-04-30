@@ -26,12 +26,12 @@ class TewkeEntity(CoordinatorEntity[TewkeCoordinator]):
         super().__init__(coordinator)
         entry = coordinator.config_entry
         tap = entry.runtime_data.tap
-        legacy_id = entry.unique_id or entry.entry_id
-        identifiers: set[tuple[str, str]] = {(DOMAIN, legacy_id)}
-        if tap.wall_dock_id:
-            identifiers.add((DOMAIN, tap.wall_dock_id))
+        wall_dock_id = tap.wall_dock_id
+        if wall_dock_id is None:
+            msg = "Tewke device missing wall_dock_id"
+            raise ValueError(msg)  # noqa: TRY003
         self._attr_device_info = DeviceInfo(
-            identifiers=identifiers,
+            identifiers={(DOMAIN, wall_dock_id)},
             name=entry.data.get(CONF_NAME, "Tewke"),
             manufacturer="Tewke",
             model="Tap",

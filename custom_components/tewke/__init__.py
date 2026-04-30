@@ -203,10 +203,8 @@ async def async_setup_entry(
                 data={**entry.data, CONF_NAME: new_name},
             )
             device_registry = dr.async_get(hass)
-            device_id = tap.wall_dock_id or entry.unique_id or entry.entry_id
-            device = device_registry.async_get_device(
-                identifiers={(DOMAIN, device_id)}
-            )
+            device_id = tap.wall_dock_id
+            device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
             if device:
                 device_registry.async_update_device(device.id, name=new_name)
 

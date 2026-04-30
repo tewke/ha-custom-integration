@@ -86,10 +86,8 @@ class TewkeBinarySensor(TewkeEntity, BinarySensorEntity):
         """Initialise the binary sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        entry = coordinator.config_entry
-        self._attr_unique_id = (
-            f"{entry.unique_id or entry.entry_id}_sensor_{description.key}"
-        )
+        hardware_id = coordinator.data["config"].hardware_id
+        self._attr_unique_id = f"{hardware_id}_sensor_{description.key}"
 
     @property
     def is_on(self) -> bool | None:
@@ -109,8 +107,8 @@ class TewkeScreenBinarySensor(TewkeEntity, BinarySensorEntity):
     def __init__(self, coordinator: TewkeCoordinator) -> None:
         """Initialise the screen sensor."""
         super().__init__(coordinator)
-        entry = coordinator.config_entry
-        self._attr_unique_id = f"{entry.unique_id or entry.entry_id}_screen_on"
+        hardware_id = coordinator.data["config"].hardware_id
+        self._attr_unique_id = f"{hardware_id}_screen_on"
 
     @property
     def is_on(self) -> bool | None:

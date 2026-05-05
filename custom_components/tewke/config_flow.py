@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING
 
 import pytewke
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
@@ -75,9 +80,7 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
         self._room_name = entry.data.get("room_name")
         self._scene_control_types = entry.data.get("scene_control_types", {})
         self._disabled_scenes = list(entry.data.get(CONF_DISABLED_SCENES, []))
-        self._default_scene_fan_dimming = entry.data.get(
-            CONF_DEFAULT_SCENE_FAN_DIMMING, {}
-        )
+        self._default_scene_fan_dimming = _get_default_scene_fan_dimming(entry)
         return await self.async_step_confirm_control_types()
 
     async def async_step_zeroconf(
@@ -248,10 +251,15 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_DISABLED_SCENES: getattr(self, "_disabled_scenes", []),
             }
 
-            if self.source == "reconfigure":
+            if self.source == SOURCE_RECONFIGURE:
+                entry = self._get_reconfigure_entry()
+                options = dict(entry.options)
+                options.pop(CONF_DEFAULT_SCENE_FAN_DIMMING, None)
+
                 return self.async_update_reload_and_abort(
-                    self._get_reconfigure_entry(),
+                    entry,
                     data=data,
+                    options=options,
                 )
 
             return self.async_create_entry(

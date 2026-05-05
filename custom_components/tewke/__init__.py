@@ -112,6 +112,7 @@ async def async_setup_entry(  # noqa: PLR0915
                     new_fan_dimming.pop(sid, None)
                 new_data[CONF_DEFAULT_SCENE_FAN_DIMMING] = new_fan_dimming
 
+            entry.runtime_data.scene_control_types = new_scene_control_types
             hass.config_entries.async_update_entry(entry, data=new_data)
             return
 

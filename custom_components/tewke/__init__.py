@@ -42,7 +42,7 @@ PLATFORMS: list[Platform] = [
 ]
 
 
-async def async_setup_entry(
+async def async_setup_entry(  # noqa: PLR0915
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
 ) -> bool:

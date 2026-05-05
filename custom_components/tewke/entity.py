@@ -29,7 +29,7 @@ class TewkeEntity(CoordinatorEntity[TewkeCoordinator]):
         wall_dock_id = tap.wall_dock_id
         if wall_dock_id is None:
             msg = "Tewke device missing wall_dock_id"
-            raise ValueError(msg)  # noqa: TRY003
+            raise ValueError(msg)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, wall_dock_id)},
             name=entry.data.get(CONF_NAME, "Tewke"),

@@ -50,12 +50,13 @@ _FAN_SPEED_SELECTOR = selector.NumberSelector(
     )
 )
 
-# Maximum scenes handled in one batch step; must match the scene_N entries in strings.json.
+# Maximum scenes handled in one batch step;
+# must match the scene_N entries in strings.json.
 _MAX_BATCH_SCENES = 50
 
 
 class TewkeNewSceneRepairFlow(RepairsFlow):
-    """Repair flow to configure pending scenes for a device, up to one batch per invocation."""
+    """Flow to configure pending scenes for a device, up to one batch per invocation."""
 
     def __init__(self, entry: TewkeConfigEntry) -> None:
         """Initialise the flow."""

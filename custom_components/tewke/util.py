@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .const import CONF_DEFAULT_SCENE_FAN_DIMMING, DEFAULT_SCENE_FAN_DIMMING
+from .const import CONF_DEFAULT_SCENE_FAN_DIMMING
 
 if TYPE_CHECKING:
     from .data import TewkeConfigEntry

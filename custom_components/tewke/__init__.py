@@ -11,7 +11,12 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from pytewke.error import PyTewkeDiscoveryError
 
-from .const import DOMAIN, LOGGER
+from .const import (
+    CONF_DEFAULT_SCENE_FAN_DIMMING,
+    CONF_DISABLED_SCENES,
+    DOMAIN,
+    LOGGER,
+)
 from .coordinator import TewkeCoordinator
 from .data import TewkeData
 
@@ -77,8 +82,39 @@ async def async_setup_entry(
         if tewke_coordinator.data is None:
             return
 
-        # Update coordinator data so that availability (and state) is reflected
         scene_control_types = entry.runtime_data.scene_control_types
+
+        # Handle scenes that are no longer provided by the device
+        removed_configured_ids = [
+            sid for sid in scene_control_types if sid not in scenes
+        ]
+        if removed_configured_ids:
+            LOGGER.info(
+                "Marking deleted scenes as unavailable: %s", removed_configured_ids
+            )
+            new_scene_control_types = dict(scene_control_types)
+
+            for sid in removed_configured_ids:
+                del new_scene_control_types[sid]
+
+            new_data = dict(entry.data)
+            new_data["scene_control_types"] = new_scene_control_types
+
+            if CONF_DISABLED_SCENES in new_data:
+                new_data[CONF_DISABLED_SCENES] = [
+                    sid
+                    for sid in new_data[CONF_DISABLED_SCENES]
+                    if sid not in removed_configured_ids
+                ]
+            if CONF_DEFAULT_SCENE_FAN_DIMMING in new_data:
+                new_fan_dimming = dict(new_data[CONF_DEFAULT_SCENE_FAN_DIMMING])
+                for sid in removed_configured_ids:
+                    new_fan_dimming.pop(sid, None)
+                new_data[CONF_DEFAULT_SCENE_FAN_DIMMING] = new_fan_dimming
+
+            hass.config_entries.async_update_entry(entry, data=new_data)
+            return
+
         configured_scenes = {
             scene_id: scene
             for scene_id, scene in scenes.items()

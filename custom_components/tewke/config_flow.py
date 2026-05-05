@@ -61,8 +61,24 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(_config_entry: ConfigEntry) -> TewkeOptionsFlow:
-        """Return the options flow handler."""
+        """Return the Options flow handler."""
         return TewkeOptionsFlow()
+
+    async def async_step_reconfigure(
+        self,
+        user_input: dict[str, str] | None = None,  # noqa: ARG002
+    ) -> ConfigFlowResult:
+        """Handle a reconfiguration flow initialised by the user."""
+        entry = self._get_reconfigure_entry()
+        self._discovered_host = entry.data[CONF_HOST]
+        self._discovered_name = entry.data[CONF_NAME]
+        self._room_name = entry.data.get("room_name")
+        self._scene_control_types = entry.data.get("scene_control_types", {})
+        self._disabled_scenes = list(entry.data.get(CONF_DISABLED_SCENES, []))
+        self._default_scene_fan_dimming = entry.data.get(
+            CONF_DEFAULT_SCENE_FAN_DIMMING, {}
+        )
+        return await self.async_step_confirm_control_types()
 
     async def async_step_zeroconf(
         self, discovery_info: ZeroconfServiceInfo
@@ -152,15 +168,18 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self.async_step_confirmation()
 
         fields: dict = {}
-        for scene in scenes.values():
+        existing_types = getattr(self, "_scene_control_types", {})
+        existing_disabled = getattr(self, "_disabled_scenes", [])
+        for scene_id, scene in scenes.items():
             fields[vol.Required(scene.name)] = section(
                 vol.Schema(
                     {
                         vol.Optional(
-                            "Enabled", default=True
+                            "Enabled", default=scene_id not in existing_disabled
                         ): selector.BooleanSelector(),
                         vol.Required(
-                            "Control type", default="light"
+                            "Control type",
+                            default=existing_types.get(scene_id, "light"),
                         ): selector.SelectSelector(
                             selector.SelectSelectorConfig(
                                 options=_CONTROL_TYPE_OPTIONS,
@@ -196,14 +215,19 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             }
             return await self.async_step_confirmation()
 
+        existing_dimming = getattr(self, "_default_scene_fan_dimming", {})
+
         return self.async_show_form(
             step_id="fan_default_speeds",
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        scene.name, default=DEFAULT_SCENE_FAN_DIMMING
+                        scene.name,
+                        default=existing_dimming.get(
+                            scene_id, DEFAULT_SCENE_FAN_DIMMING
+                        ),
                     ): _FAN_SPEED_SELECTOR
-                    for scene in fan_scenes.values()
+                    for scene_id, scene in fan_scenes.items()
                 }
             ),
         )
@@ -213,18 +237,26 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Final confirmation before creating the config entry."""  # noqa: D401
         if user_input is not None:
+            data = {
+                CONF_HOST: self._discovered_host,
+                CONF_NAME: self._discovered_name,
+                "room_name": self._room_name,
+                "scene_control_types": self._scene_control_types or {},
+                CONF_DEFAULT_SCENE_FAN_DIMMING: getattr(
+                    self, "_default_scene_fan_dimming", {}
+                ),
+                CONF_DISABLED_SCENES: getattr(self, "_disabled_scenes", []),
+            }
+
+            if self.source == "reconfigure":
+                return self.async_update_reload_and_abort(
+                    self._get_reconfigure_entry(),
+                    data=data,
+                )
+
             return self.async_create_entry(
                 title=self._discovered_name,
-                data={
-                    CONF_HOST: self._discovered_host,
-                    CONF_NAME: self._discovered_name,
-                    "room_name": self._room_name,
-                    "scene_control_types": self._scene_control_types or {},
-                    CONF_DEFAULT_SCENE_FAN_DIMMING: getattr(
-                        self, "_default_scene_fan_dimming", {}
-                    ),
-                    CONF_DISABLED_SCENES: getattr(self, "_disabled_scenes", []),
-                },
+                data=data,
             )
 
         return self.async_show_form(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import timedelta
 from typing import TYPE_CHECKING, TypedDict
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -14,6 +16,10 @@ from pytewke.error import (
 from .const import LOGGER
 
 if TYPE_CHECKING:
+    import logging
+    from collections.abc import Awaitable, Callable
+
+    from homeassistant.core import HomeAssistant
     from pytewke.data import (
         ConfigData,
         EnergyData,
@@ -24,6 +30,49 @@ if TYPE_CHECKING:
     )
 
     from .data import TewkeConfigEntry
+
+# Transient errors that are worth retrying (device/network busy or timed out).
+# PyTewkeInvalidResponseError is intentionally excluded — it means the device
+# returned malformed data, which retrying is unlikely to fix.
+_RETRYABLE_ERRORS = (PyTewkeCoapError, PyTewkeUnknownError, TimeoutError)
+
+# Delay sequence (seconds) between successive retry attempts.
+_RETRY_DELAYS: list[float] = [1.0, 2.0, 4.0]
+
+# Fallback polling interval.  The coordinator is primarily push-based; this
+# acts as a safety-net so that if observations go silent the coordinator can
+# still recover without requiring a restart.
+_RECOVERY_INTERVAL = timedelta(minutes=5)
+
+
+async def _fetch_with_retries[T](fn: Callable[[], Awaitable[T]]) -> T:
+    """
+    Await *fn()*, retrying on transient errors with exponential back-off.
+
+    Raises the original exception if all attempts are exhausted, or immediately
+    if the error is not considered transient.
+    """
+    last_err: Exception | None = None
+    for attempt, delay in enumerate(_RETRY_DELAYS):
+        try:
+            return await fn()
+        except _RETRYABLE_ERRORS as err:
+            last_err = err
+            if delay is None:
+                # Final attempt exhausted — propagate.
+                break
+            LOGGER.debug(
+                "Transient Tap error (attempt %d/%d), retrying in %.0fs: %s",
+                attempt + 1,
+                len(_RETRY_DELAYS) + 1,
+                delay,
+                err,
+            )
+            await asyncio.sleep(delay)
+        except PyTewkeInvalidResponseError, Exception:
+            # Non-transient or unexpected error — fail immediately.
+            raise
+    raise last_err
 
 
 class TewkeCoordinatorData(TypedDict):
@@ -42,22 +91,37 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
     """
     Coordinator for all Tewke state (scenes, targets, sensors).
 
-    All updates are push-based via CoAP observation callbacks registered in
-    `async_setup_entry` — no periodic polling occurs. The initial data fetch
-    in `_async_update_data` runs once on setup, after which
-    "async_set_updated_data" is called by each observation callback.
+    Updates are primarily push-based via CoAP observation callbacks registered
+    in `async_setup_entry`.  `_async_update_data` runs at initial setup and
+    whenever an entity service call triggers `async_request_refresh`.  A
+    periodic fallback interval (`_RECOVERY_INTERVAL`) ensures the coordinator
+    can self-heal if observations go silent.
 
     See TewkeCoordinatorData for the full shape of the coordinator data.
     """
 
     config_entry: TewkeConfigEntry
 
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        logger: logging.Logger,
+        name: str,
+    ) -> None:
+        """Initialise coordinator with a fallback recovery interval."""
+        super().__init__(
+            hass=hass,
+            logger=logger,
+            name=name,
+            update_interval=_RECOVERY_INTERVAL,
+        )
+
     async def _async_update_data(self) -> TewkeCoordinatorData:
-        """Fetch initial state for all resources."""
+        """Fetch current state for all resources, retrying on transient errors."""
         tap = self.config_entry.runtime_data.tap
         try:
-            scenes_all = await tap.get_scenes()
-            targets = await tap.get_targets()
+            scenes_all = await _fetch_with_retries(tap.get_scenes)
+            targets = await _fetch_with_retries(tap.get_targets)
         except (
             PyTewkeCoapError,
             PyTewkeInvalidResponseError,

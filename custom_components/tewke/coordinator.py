@@ -58,9 +58,6 @@ async def _fetch_with_retries[T](fn: Callable[[], Awaitable[T]]) -> T:
             return await fn()
         except _RETRYABLE_ERRORS as err:
             last_err = err
-            if delay is None:
-                # Final attempt exhausted — propagate.
-                break
             LOGGER.debug(
                 "Transient Tap error (attempt %d/%d), retrying in %.0fs: %s",
                 attempt + 1,

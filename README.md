@@ -16,17 +16,13 @@ A pre-release Home Assistant integration for Tewke devices.
 
 - [x] Scene control
   - [x] As lights, fans, or switches
-- [x] Target control
+- [x] Target control (default disabled)
 - [x] Sensor data
 - [ ] Repair flows:
-  - [ ] New Scene
-  - [ ] Renamed Scene
-  - [ ] Deleted Scene
-  - [ ] New Target
-  - [ ] Deleted Target
-  - [ ] Changed Wall Dock
-- [ ] Reconfigure flow
-- [ ] Scene deduplication within rooms
+  - [x] New Scenes
+  - [ ] Rename Scenes
+- [x] Handle deleted Scenes
+- [x] Reconfigure flow
 
 
 ## Prerequisites

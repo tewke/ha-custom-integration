@@ -113,13 +113,31 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             name=name,
             update_interval=_RECOVERY_INTERVAL,
         )
+        self._observe_setup_lock = asyncio.Lock()
+        self._observe_retry_task: asyncio.Task[None] | None = None
 
     async def _setup_observe(self) -> None:
+        async def retry_setup_observe() -> None:
+            try:
+                await self._setup_observe()
+            finally:
+                if self._observe_retry_task is asyncio.current_task():
+                    self._observe_retry_task = None
+
         def handle_timeout() -> None:
             self.config_entry.runtime_data.observe_active = False
-            self.hass.async_create_task(self._setup_observe())
+            if (
+                self._observe_retry_task is not None
+                and not self._observe_retry_task.done()
+            ):
+                return
+            self._observe_retry_task = self.hass.async_create_task(
+                retry_setup_observe()
+            )
 
-        if not self.config_entry.runtime_data.observe_active:
+        async with self._observe_setup_lock:
+            if self.config_entry.runtime_data.observe_active:
+                return
             LOGGER.info(
                 "CoAP observations not active for %s; attempting to re-establish",
                 self.config_entry.entry_id,
@@ -133,7 +151,10 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
     async def _async_update_data(self) -> TewkeCoordinatorData:
         """Fetch current state for all resources, retrying on transient errors."""
+        await self._setup_observe()
+
         tap = self.config_entry.runtime_data.tap
+
         try:
             scenes_all = await _fetch_with_retries(tap.get_scenes)
             targets = await _fetch_with_retries(tap.get_targets)

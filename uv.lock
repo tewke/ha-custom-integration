@@ -943,7 +943,7 @@ dev = [
 requires-dist = [
     { name = "colorlog", specifier = "==6.10.1" },
     { name = "homeassistant", specifier = "==2026.3.3" },
-    { name = "pytewke", specifier = ">=0.5.0" },
+    { name = "pytewke", specifier = "==0.5.0" },
     { name = "voluptuous", specifier = ">=0.15.2" },
 ]
 

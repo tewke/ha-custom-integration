@@ -14,6 +14,7 @@ from pytewke.error import (
 )
 
 from .const import LOGGER
+from .util import async_setup_observe
 
 if TYPE_CHECKING:
     import logging
@@ -127,6 +128,13 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         ) as err:
             msg = f"Error communicating with Tewke Tap: {err}"
             raise UpdateFailed(msg) from err
+
+        if not self.config_entry.runtime_data.observe_active:
+            LOGGER.info(
+                "CoAP observations not active for %s; attempting to re-establish",
+                self.config_entry.entry_id,
+            )
+            await async_setup_observe(self.hass, self.config_entry, self)
 
         scene_control_types = self.config_entry.runtime_data.scene_control_types
         configured_scenes = {

@@ -1,7 +1,7 @@
 # Home Assistant Tewke
 
-![status_badge](https://img.shields.io/badge/status-alpha-red)
-
+![status_badge](https://img.shields.io/badge/status-alpha-red) 
+[![Validate HACS](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml/badge.svg)](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml)
 - [Home Assistant Tewke](#home-assistant-tewke)
   - [Features](#features)
   - [Prerequisites](#prerequisites)

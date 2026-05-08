@@ -58,8 +58,6 @@ async def async_setup_entry(
 
     await tewke_coordinator.async_config_entry_first_refresh()
 
-    await async_setup_observe(hass, entry, tewke_coordinator)
-
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     entry.async_on_unload(tap.close)

@@ -71,6 +71,8 @@ async def async_setup_observe(
     """
     tap = entry.runtime_data.tap
 
+    await tap._observation_manager.close()  # noqa: SLF001
+
     def _on_scene_update(scenes: dict[str, Scene]) -> None:
         """
         Handle scene updates from the Tewke device.
@@ -239,6 +241,10 @@ async def async_setup_observe(
                 device_registry.async_update_device(device.id, name=new_name)
 
     try:
+        LOGGER.debug(
+            "Setting up CoAP observations for %s",
+            entry.data.get(CONF_NAME, entry.entry_id),
+        )
         await tap.observe(
             scene_callback=_on_scene_update,
             target_callback=_on_target_update,

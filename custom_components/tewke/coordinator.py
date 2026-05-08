@@ -114,6 +114,23 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             update_interval=_RECOVERY_INTERVAL,
         )
 
+    async def _setup_observe(self) -> None:
+        def handle_timeout() -> None:
+            self.config_entry.runtime_data.observe_active = False
+            self.hass.async_create_task(self._setup_observe())
+
+        if not self.config_entry.runtime_data.observe_active:
+            LOGGER.info(
+                "CoAP observations not active for %s; attempting to re-establish",
+                self.config_entry.entry_id,
+            )
+            await async_setup_observe(
+                self,
+                self.hass,
+                self.config_entry,
+                timeout_callback=handle_timeout,
+            )
+
     async def _async_update_data(self) -> TewkeCoordinatorData:
         """Fetch current state for all resources, retrying on transient errors."""
         tap = self.config_entry.runtime_data.tap
@@ -128,13 +145,6 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         ) as err:
             msg = f"Error communicating with Tewke Tap: {err}"
             raise UpdateFailed(msg) from err
-
-        if not self.config_entry.runtime_data.observe_active:
-            LOGGER.info(
-                "CoAP observations not active for %s; attempting to re-establish",
-                self.config_entry.entry_id,
-            )
-            await async_setup_observe(self.hass, self.config_entry, self)
 
         scene_control_types = self.config_entry.runtime_data.scene_control_types
         configured_scenes = {

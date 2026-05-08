@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from homeassistant.const import CONF_NAME
 from homeassistant.helpers import device_registry as dr
@@ -59,9 +59,10 @@ def _ha_to_tewke_brightness(value: int) -> int:
 
 
 async def async_setup_observe(
+    coordinator: TewkeCoordinator,
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
-    coordinator: TewkeCoordinator,
+    timeout_callback: Callable[[], None],
 ) -> bool:
     """
     Register CoAP observation callbacks on the Tap and start observing.
@@ -186,9 +187,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
-        coordinator.async_set_updated_data(
-            {**coordinator.data, "sensors": sensor_data}
-        )
+        coordinator.async_set_updated_data({**coordinator.data, "sensors": sensor_data})
 
     def _on_radar_update(radar_data: RadarData) -> None:
         """
@@ -198,9 +197,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
-        coordinator.async_set_updated_data(
-            {**coordinator.data, "radar": radar_data}
-        )
+        coordinator.async_set_updated_data({**coordinator.data, "radar": radar_data})
 
     def _on_energy_update(energy_data: EnergyData) -> None:
         """
@@ -210,9 +207,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
-        coordinator.async_set_updated_data(
-            {**coordinator.data, "energy": energy_data}
-        )
+        coordinator.async_set_updated_data({**coordinator.data, "energy": energy_data})
 
     def _on_config_update(config_data: ConfigData) -> None:
         """
@@ -222,9 +217,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
-        coordinator.async_set_updated_data(
-            {**coordinator.data, "config": config_data}
-        )
+        coordinator.async_set_updated_data({**coordinator.data, "config": config_data})
 
         new_name = config_data.device_name
         if new_name and new_name != entry.data.get(CONF_NAME):
@@ -248,6 +241,8 @@ async def async_setup_observe(
             radar_callback=_on_radar_update,
             energy_callback=_on_energy_update,
             config_change_callback=_on_config_update,
+            timeout_in_secs=30,
+            timeout_callback=timeout_callback,
         )
     except PyTewkeObserveError:
         LOGGER.warning(

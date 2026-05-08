@@ -12,7 +12,6 @@ from pytewke.error import PyTewkeDiscoveryError
 from .const import DOMAIN, LOGGER
 from .coordinator import TewkeCoordinator
 from .data import TewkeData
-from .util import async_setup_observe
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant

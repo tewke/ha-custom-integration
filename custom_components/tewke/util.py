@@ -70,6 +70,9 @@ async def async_setup_observe(
     The ``observe_active`` flag on ``entry.runtime_data`` is set accordingly.
     """
     tap = entry.runtime_data.tap
+    host = entry.data.get(CONF_NAME, entry.entry_id)
+
+    LOGGER.debug("[%s] Setting up CoAP observations", host)
 
     def _on_scene_update(scenes: dict[str, Scene]) -> None:
         """
@@ -78,8 +81,10 @@ async def async_setup_observe(
         This callback is triggered when the scenes on the device change. It
         identifies new scenes and creates a repair issue to configure them.
         """
+        LOGGER.debug("[%s] Scene update received: %d scene(s)", host, len(scenes))
         coordinator.reset_observation_timeout()
         if coordinator.data is None:
+            LOGGER.debug("[%s] Scene update ignored: coordinator has no data yet", host)
             return
 
         scene_control_types = entry.runtime_data.scene_control_types
@@ -122,6 +127,12 @@ async def async_setup_observe(
             if scene_id in scene_control_types
         }
 
+        LOGGER.debug(
+            "[%s] Updating coordinator: %d configured scene(s) of %d total",
+            host,
+            len(configured_scenes),
+            len(scenes),
+        )
         coordinator.async_set_updated_data(
             {
                 **coordinator.data,
@@ -135,6 +146,7 @@ async def async_setup_observe(
             sid for sid in entry.runtime_data.pending_scenes if sid not in scenes
         ]
         for sid in stale_ids:
+            LOGGER.debug("[%s] Removing stale pending scene: %s", host, sid)
             del entry.runtime_data.pending_scenes[sid]
 
         new_scenes = {
@@ -169,8 +181,12 @@ async def async_setup_observe(
         This callback is triggered when the targets on the device change.
         It updates the coordinator with the new target data.
         """
+        LOGGER.debug("[%s] Target update received: %d target(s)", host, len(targets))
         coordinator.reset_observation_timeout()
         if coordinator.data is None:
+            LOGGER.debug(
+                "[%s] Target update ignored: coordinator has no data yet", host
+            )
             return
 
         coordinator.async_set_updated_data(
@@ -186,8 +202,12 @@ async def async_setup_observe(
 
         This callback is triggered when the sensors on the device change.
         """
+        LOGGER.debug("[%s] Sensor update received: %s", host, sensor_data)
         coordinator.reset_observation_timeout()
         if coordinator.data is None:
+            LOGGER.debug(
+                "[%s] Sensor update ignored: coordinator has no data yet", host
+            )
             return
         coordinator.async_set_updated_data({**coordinator.data, "sensors": sensor_data})
 
@@ -197,8 +217,12 @@ async def async_setup_observe(
 
         This callback is triggered when the radar on the device changes.
         """
+        LOGGER.debug("[%s] Radar update received: %s", host, radar_data)
         coordinator.reset_observation_timeout()
         if coordinator.data is None:
+            LOGGER.debug(
+                "[%s] Radar update ignored: coordinator has no data yet", host
+            )
             return
         coordinator.async_set_updated_data({**coordinator.data, "radar": radar_data})
 
@@ -208,8 +232,12 @@ async def async_setup_observe(
 
         This callback is triggered when the energy on the device changes.
         """
+        LOGGER.debug("[%s] Energy update received: %s", host, energy_data)
         coordinator.reset_observation_timeout()
         if coordinator.data is None:
+            LOGGER.debug(
+                "[%s] Energy update ignored: coordinator has no data yet", host
+            )
             return
         coordinator.async_set_updated_data({**coordinator.data, "energy": energy_data})
 
@@ -219,8 +247,12 @@ async def async_setup_observe(
 
         This callback is triggered when the config on the device changes.
         """
+        LOGGER.debug("[%s] Config update received: %s", host, config_data)
         coordinator.reset_observation_timeout()
         if coordinator.data is None:
+            LOGGER.debug(
+                "[%s] Config update ignored: coordinator has no data yet", host
+            )
             return
         coordinator.async_set_updated_data({**coordinator.data, "config": config_data})
 
@@ -239,6 +271,7 @@ async def async_setup_observe(
                 device_registry.async_update_device(device.id, name=new_name)
 
     try:
+        LOGGER.debug("[%s] Calling tap.observe()", host)
         await tap.observe(
             scene_callback=_on_scene_update,
             target_callback=_on_target_update,
@@ -250,17 +283,19 @@ async def async_setup_observe(
     except PyTewkeObserveError:
         LOGGER.warning(
             "Failed to set up CoAP observations for %s; will retry on next poll",
-            entry.data.get(CONF_NAME, entry.entry_id),
+            host,
             exc_info=True,
         )
         entry.runtime_data.observe_active = False
         return False
 
+    LOGGER.debug("[%s] CoAP observations active; starting inactivity timer", host)
     entry.runtime_data.observe_active = True
     coordinator.reset_observation_timeout()
 
     # Process scenes already fetched during initial discovery
     if coordinator.data and "scenes_all" in coordinator.data:
+        LOGGER.debug("[%s] Processing initial scenes from first refresh", host)
         _on_scene_update(coordinator.data["scenes_all"])
 
     return True

@@ -260,6 +260,7 @@ async def async_setup_observe(
             exc_info=True,
         )
         entry.runtime_data.observe_active = False
+        coordinator.reset_observation_timeout()
         return False
 
     entry.runtime_data.observe_active = True

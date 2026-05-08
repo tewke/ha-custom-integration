@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_NAME
 from homeassistant.helpers import device_registry as dr
@@ -62,7 +62,6 @@ async def async_setup_observe(
     coordinator: TewkeCoordinator,
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
-    timeout_callback: Callable[[], None],
 ) -> bool:
     """
     Register CoAP observation callbacks on the Tap and start observing.
@@ -81,6 +80,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
+        coordinator.reset_observation_timeout()
 
         scene_control_types = entry.runtime_data.scene_control_types
 
@@ -171,6 +171,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
+        coordinator.reset_observation_timeout()
 
         coordinator.async_set_updated_data(
             {
@@ -187,6 +188,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
+        coordinator.reset_observation_timeout()
         coordinator.async_set_updated_data({**coordinator.data, "sensors": sensor_data})
 
     def _on_radar_update(radar_data: RadarData) -> None:
@@ -197,6 +199,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
+        coordinator.reset_observation_timeout()
         coordinator.async_set_updated_data({**coordinator.data, "radar": radar_data})
 
     def _on_energy_update(energy_data: EnergyData) -> None:
@@ -207,6 +210,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
+        coordinator.reset_observation_timeout()
         coordinator.async_set_updated_data({**coordinator.data, "energy": energy_data})
 
     def _on_config_update(config_data: ConfigData) -> None:
@@ -217,6 +221,7 @@ async def async_setup_observe(
         """
         if coordinator.data is None:
             return
+        coordinator.reset_observation_timeout()
         coordinator.async_set_updated_data({**coordinator.data, "config": config_data})
 
         new_name = config_data.device_name
@@ -241,8 +246,6 @@ async def async_setup_observe(
             radar_callback=_on_radar_update,
             energy_callback=_on_energy_update,
             config_change_callback=_on_config_update,
-            timeout_in_secs=30,
-            timeout_callback=timeout_callback,
         )
     except PyTewkeObserveError:
         LOGGER.warning(
@@ -254,6 +257,7 @@ async def async_setup_observe(
         return False
 
     entry.runtime_data.observe_active = True
+    coordinator.reset_observation_timeout()
 
     # Process scenes already fetched during initial discovery
     if coordinator.data and "scenes_all" in coordinator.data:

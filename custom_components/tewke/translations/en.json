@@ -39,7 +39,6 @@
 	"issues": {
 		"new_scenes_found": {
 			"title": "New Scenes discovered",
-			"description": "New Scenes have been discovered on your Tewke device {name}.\n\nPlease configure them to make them available in Home Assistant.",
 			"fix_flow": {
 				"step": {
 					"configure_scenes": {

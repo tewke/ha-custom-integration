@@ -139,10 +139,17 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         )
 
     def cancel_observation_timeout(self) -> None:
-        """Cancel the pending inactivity timer, e.g. on entry unload."""
+        """Cancel the pending inactivity timer and any in-flight retry task.
+
+        Called on entry unload to prevent the retry task from running against
+        stale runtime_data after the entry has been torn down.
+        """
         if self._observation_timeout_unsub is not None:
             self._observation_timeout_unsub()
             self._observation_timeout_unsub = None
+        if self._observe_retry_task is not None and not self._observe_retry_task.done():
+            self._observe_retry_task.cancel()
+            self._observe_retry_task = None
 
     @callback
     def _handle_observation_timeout(self, _now: datetime) -> None:

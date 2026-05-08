@@ -125,9 +125,8 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
                     self._observe_retry_task = None
 
         def handle_timeout() -> None:
-            self.config_entry.runtime_data.observe_active = False
-
             def _schedule() -> None:
+                self.config_entry.runtime_data.observe_active = False
                 if (
                     self._observe_retry_task is not None
                     and not self._observe_retry_task.done()

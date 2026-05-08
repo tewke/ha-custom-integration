@@ -126,14 +126,20 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
         def handle_timeout() -> None:
             self.config_entry.runtime_data.observe_active = False
-            if (
-                self._observe_retry_task is not None
-                and not self._observe_retry_task.done()
-            ):
-                return
-            self._observe_retry_task = self.hass.async_create_task(
-                retry_setup_observe()
-            )
+
+            def _schedule() -> None:
+                if (
+                    self._observe_retry_task is not None
+                    and not self._observe_retry_task.done()
+                ):
+                    return
+                self._observe_retry_task = self.hass.async_create_task(
+                    retry_setup_observe()
+                )
+
+            # handle_timeout is fired from a threading.Timer thread; schedule
+            # task creation back onto the event loop to keep it thread-safe.
+            self.hass.loop.call_soon_threadsafe(_schedule)
 
         async with self._observe_setup_lock:
             if self.config_entry.runtime_data.observe_active:

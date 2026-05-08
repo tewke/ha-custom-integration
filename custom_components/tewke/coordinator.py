@@ -21,6 +21,7 @@ from .util import async_setup_observe
 if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable
+    from datetime import datetime
 
     from homeassistant.core import HomeAssistant
     from pytewke.data import (
@@ -144,7 +145,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             self._observation_timeout_unsub = None
 
     @callback
-    def _handle_observation_timeout(self, _now: object) -> None:
+    def _handle_observation_timeout(self, _now: datetime) -> None:
         """Fire on the event loop when no observations have arrived for a while."""
         self.logger.info(
             "Observations timed out for tap %s, retrying",

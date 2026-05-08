@@ -59,6 +59,7 @@ async def async_setup_entry(
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    entry.async_on_unload(tewke_coordinator.cancel_observation_timeout)
     entry.async_on_unload(tap.close)
 
     return True

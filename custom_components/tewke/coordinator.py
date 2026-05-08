@@ -6,6 +6,8 @@ import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING, TypedDict
 
+from homeassistant.core import HassJob, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pytewke.error import (
     PyTewkeCoapError,
@@ -19,6 +21,7 @@ from .util import async_setup_observe
 if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable
+    from datetime import datetime
 
     from homeassistant.core import HomeAssistant
     from pytewke.data import (
@@ -39,6 +42,9 @@ _RETRYABLE_ERRORS = (PyTewkeCoapError, PyTewkeUnknownError, TimeoutError)
 
 # Delay sequence (seconds) between successive retry attempts.
 _RETRY_DELAYS: list[float] = [1.0, 2.0, 4.0]
+
+# Seconds of observation silence before we treat the connection as lost.
+_OBSERVATION_TIMEOUT_SECS = 30
 
 # Fallback polling interval.  The coordinator is primarily push-based; this
 # acts as a safety-net so that if observations go silent the coordinator can
@@ -115,31 +121,58 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         )
         self._observe_setup_lock = asyncio.Lock()
         self._observe_retry_task: asyncio.Task[None] | None = None
+        self._observation_timeout_unsub: Callable[[], None] | None = None
+        self._observation_timeout_job = HassJob(
+            self._handle_observation_timeout, cancel_on_shutdown=True
+        )
 
-    async def _setup_observe(self) -> None:
-        async def retry_setup_observe() -> None:
+    def reset_observation_timeout(self) -> None:
+        """Restart the inactivity timer; call this on every received observation.
+
+        Runs on the event loop (CoAP callbacks are async), so async_call_later
+        is safe to use directly — no call_soon_threadsafe required.
+        """
+        if self._observation_timeout_unsub is not None:
+            self._observation_timeout_unsub()
+        self._observation_timeout_unsub = async_call_later(
+            self.hass, _OBSERVATION_TIMEOUT_SECS, self._observation_timeout_job
+        )
+
+    def cancel_observation_timeout(self) -> None:
+        """Cancel the pending inactivity timer and any in-flight retry task.
+
+        Called on entry unload to prevent the retry task from running against
+        stale runtime_data after the entry has been torn down.
+        """
+        if self._observation_timeout_unsub is not None:
+            self._observation_timeout_unsub()
+            self._observation_timeout_unsub = None
+        if self._observe_retry_task is not None and not self._observe_retry_task.done():
+            self._observe_retry_task.cancel()
+            self._observe_retry_task = None
+
+    @callback
+    def _handle_observation_timeout(self, _now: datetime) -> None:
+        """Fire on the event loop when no observations have arrived for a while."""
+        self.logger.info(
+            "Observations timed out for tap %s, retrying",
+            self.config_entry.runtime_data.tap.wall_dock_id,
+        )
+        self._observation_timeout_unsub = None
+        self.config_entry.runtime_data.observe_active = False
+        if self._observe_retry_task is not None and not self._observe_retry_task.done():
+            return
+
+        async def _retry() -> None:
             try:
                 await self._setup_observe()
             finally:
                 if self._observe_retry_task is asyncio.current_task():
                     self._observe_retry_task = None
 
-        def handle_timeout() -> None:
-            def _schedule() -> None:
-                self.config_entry.runtime_data.observe_active = False
-                if (
-                    self._observe_retry_task is not None
-                    and not self._observe_retry_task.done()
-                ):
-                    return
-                self._observe_retry_task = self.hass.async_create_task(
-                    retry_setup_observe()
-                )
+        self._observe_retry_task = self.hass.async_create_task(_retry())
 
-            # handle_timeout is fired from a threading.Timer thread; schedule
-            # task creation back onto the event loop to keep it thread-safe.
-            self.hass.loop.call_soon_threadsafe(_schedule)
-
+    async def _setup_observe(self) -> None:
         async with self._observe_setup_lock:
             if self.config_entry.runtime_data.observe_active:
                 return
@@ -147,12 +180,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
                 "CoAP observations not active for %s; attempting to re-establish",
                 self.config_entry.entry_id,
             )
-            await async_setup_observe(
-                self,
-                self.hass,
-                self.config_entry,
-                timeout_callback=handle_timeout,
-            )
+            await async_setup_observe(self, self.hass, self.config_entry)
 
     async def _async_update_data(self) -> TewkeCoordinatorData:
         """Fetch current state for all resources, retrying on transient errors."""

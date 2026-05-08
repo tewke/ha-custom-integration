@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_NAME
 from homeassistant.helpers import device_registry as dr
@@ -62,7 +62,6 @@ async def async_setup_observe(
     coordinator: TewkeCoordinator,
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
-    timeout_callback: Callable[[], None],
 ) -> bool:
     """
     Register CoAP observation callbacks on the Tap and start observing.
@@ -72,6 +71,8 @@ async def async_setup_observe(
     """
     tap = entry.runtime_data.tap
 
+    await tap._observation_manager.close()  # noqa: SLF001
+
     def _on_scene_update(scenes: dict[str, Scene]) -> None:
         """
         Handle scene updates from the Tewke device.
@@ -79,6 +80,7 @@ async def async_setup_observe(
         This callback is triggered when the scenes on the device change. It
         identifies new scenes and creates a repair issue to configure them.
         """
+        coordinator.reset_observation_timeout()
         if coordinator.data is None:
             return
 
@@ -169,6 +171,7 @@ async def async_setup_observe(
         This callback is triggered when the targets on the device change.
         It updates the coordinator with the new target data.
         """
+        coordinator.reset_observation_timeout()
         if coordinator.data is None:
             return
 
@@ -185,6 +188,7 @@ async def async_setup_observe(
 
         This callback is triggered when the sensors on the device change.
         """
+        coordinator.reset_observation_timeout()
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "sensors": sensor_data})
@@ -195,6 +199,7 @@ async def async_setup_observe(
 
         This callback is triggered when the radar on the device changes.
         """
+        coordinator.reset_observation_timeout()
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "radar": radar_data})
@@ -205,6 +210,7 @@ async def async_setup_observe(
 
         This callback is triggered when the energy on the device changes.
         """
+        coordinator.reset_observation_timeout()
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "energy": energy_data})
@@ -215,6 +221,7 @@ async def async_setup_observe(
 
         This callback is triggered when the config on the device changes.
         """
+        coordinator.reset_observation_timeout()
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "config": config_data})
@@ -234,6 +241,10 @@ async def async_setup_observe(
                 device_registry.async_update_device(device.id, name=new_name)
 
     try:
+        LOGGER.debug(
+            "Setting up CoAP observations for %s",
+            entry.data.get(CONF_NAME, entry.entry_id),
+        )
         await tap.observe(
             scene_callback=_on_scene_update,
             target_callback=_on_target_update,
@@ -241,8 +252,6 @@ async def async_setup_observe(
             radar_callback=_on_radar_update,
             energy_callback=_on_energy_update,
             config_change_callback=_on_config_update,
-            timeout_in_secs=30,
-            timeout_callback=timeout_callback,
         )
     except PyTewkeObserveError:
         LOGGER.warning(
@@ -251,9 +260,11 @@ async def async_setup_observe(
             exc_info=True,
         )
         entry.runtime_data.observe_active = False
+        coordinator.reset_observation_timeout()
         return False
 
     entry.runtime_data.observe_active = True
+    coordinator.reset_observation_timeout()
 
     # Process scenes already fetched during initial discovery
     if coordinator.data and "scenes_all" in coordinator.data:

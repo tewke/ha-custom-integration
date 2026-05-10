@@ -96,10 +96,11 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
     Coordinator for all Tewke state (scenes, targets, sensors).
 
     Updates are primarily push-based via CoAP observation callbacks registered
-    in `async_setup_entry`.  `_async_update_data` runs at initial setup and
-    whenever an entity service call triggers `async_request_refresh`.  A
-    periodic fallback interval (`_RECOVERY_INTERVAL`) ensures the coordinator
-    can self-heal if observations go silent.
+    in `async_setup_entry`.  `_async_update_data` runs at initial setup and on
+    the periodic fallback interval (`_RECOVERY_INTERVAL`), but skips the manual
+    fetch if observations are already active and data is populated — observations
+    keep the data current.  The full fetch only runs when data is absent (first
+    boot) or observations have gone silent.
 
     See TewkeCoordinatorData for the full shape of the coordinator data.
     """
@@ -183,8 +184,17 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             await async_setup_observe(self, self.hass, self.config_entry)
 
     async def _async_update_data(self) -> TewkeCoordinatorData:
-        """Fetch current state for all resources, retrying on transient errors."""
+        """Fetch current state for all resources, retrying on transient errors.
+
+        If CoAP observations are active and we already have data, skip the
+        manual fetch entirely — observations will keep the data current.
+        The full fetch only runs when we have no data yet (initial startup)
+        or when observations are down and we need to fall back to polling.
+        """
         await self._setup_observe()
+
+        if self.config_entry.runtime_data.observe_active and self.data is not None:
+            return self.data
 
         tap = self.config_entry.runtime_data.tap
 

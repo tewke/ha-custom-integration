@@ -128,8 +128,8 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             )
             target = self._target
             if target is not None:
-                 target.is_on = False
-                 target.brightness = 0
+                target.is_on = False
+                target.brightness = 0
             self.async_write_ha_state()
             await self.coordinator.ensure_data()
         except PyTewkeInvalidWallDockError:

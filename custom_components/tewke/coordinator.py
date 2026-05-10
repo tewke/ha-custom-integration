@@ -120,6 +120,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             update_interval=_RECOVERY_INTERVAL,
         )
         self._observe_setup_lock = asyncio.Lock()
+        self._manual_fetch_lock = asyncio.Lock()
         self._observe_retry_task: asyncio.Task[None] | None = None
         self._observation_timeout_unsub: Callable[[], None] | None = None
         self._observation_timeout_job = HassJob(
@@ -177,7 +178,8 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         fetching manually if no successful observations."""
         successful_observe = await self._ensure_observe()
         if not successful_observe:
-            self.async_set_updated_data(await self._update_manual_data())
+            async with self._manual_fetch_lock:
+                self.async_set_updated_data(await self._update_manual_data())
 
     async def _ensure_observe(self) -> bool:
         """Ensure CoAP observe is active, setting up if not."""
@@ -270,4 +272,5 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
     async def _async_update_data(self) -> TewkeCoordinatorData:
         """Ensure observe is set up and fetch current state for all resources, retrying on transient errors."""
         await self._ensure_observe()
-        return await self._update_manual_data()
+        async with self._manual_fetch_lock:
+            return await self._update_manual_data()

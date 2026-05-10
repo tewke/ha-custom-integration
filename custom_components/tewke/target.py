@@ -100,7 +100,7 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
                 target=self._target_index, brightness=tewke_brightness
             )
             self._target.is_on = True
-            self._target.brightness = _tewke_to_ha_brightness(tewke_brightness)
+            self._target.brightness = tewke_brightness
             self.async_write_ha_state()
             await self.coordinator.ensure_data()
         except PyTewkeInvalidWallDockError:
@@ -126,8 +126,10 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             await self.coordinator.config_entry.runtime_data.tap.set_target(
                 target=self._target_index, brightness=0
             )
-            self._target.is_on = False
-            self._target.brightness = 0
+            target = self._target
+            if target is not None:
+                 target.is_on = False
+                 target.brightness = 0
             self.async_write_ha_state()
             await self.coordinator.ensure_data()
         except PyTewkeInvalidWallDockError:

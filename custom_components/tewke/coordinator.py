@@ -173,10 +173,11 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         self._observe_retry_task = self.hass.async_create_task(_retry())
 
     async def ensure_data(self) -> None:
-        """Ensure the coordinator has up-to-date data, fetching manually if no successful observations."""
+        """Ensure the coordinator has up-to-date data,
+        fetching manually if no successful observations."""
         successful_observe = await self._ensure_observe()
         if not successful_observe:
-            await self._update_manual_data()
+            self.async_set_updated_data(await self._update_manual_data())
 
     async def _ensure_observe(self) -> bool:
         """Ensure CoAP observe is active, setting up if not."""

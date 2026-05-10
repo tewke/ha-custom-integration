@@ -105,7 +105,7 @@ class TewkeSceneEntity(TewkeEntity):
             if state and brightness is not None:
                 self._brightness = brightness
             self.async_write_ha_state()
-            await self.coordinator.ensure_observe()
+            await self.coordinator.ensure_data()
         except PyTewkeInvalidWallDockError:
             LOGGER.error("Attempted to set Scene while not connected to Wall Dock")
         except PyTewkeInvalidRequestError, RuntimeError:

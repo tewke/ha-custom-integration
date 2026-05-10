@@ -99,7 +99,10 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             await self.coordinator.config_entry.runtime_data.tap.set_target(
                 target=self._target_index, brightness=tewke_brightness
             )
-            await self.coordinator.ensure_observe()
+            self._target.is_on = True
+            self._target.brightness = _tewke_to_ha_brightness(tewke_brightness)
+            self.async_write_ha_state()
+            await self.coordinator.ensure_data()
         except PyTewkeInvalidWallDockError:
             LOGGER.error(
                 "Attempted to set Target %s while not connected to Wall Dock",
@@ -123,7 +126,10 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             await self.coordinator.config_entry.runtime_data.tap.set_target(
                 target=self._target_index, brightness=0
             )
-            await self.coordinator.ensure_observe()
+            self._target.is_on = False
+            self._target.brightness = 0
+            self.async_write_ha_state()
+            await self.coordinator.ensure_data()
         except PyTewkeInvalidWallDockError:
             LOGGER.error(
                 "Attempted to set Target %s while not connected to Wall Dock",

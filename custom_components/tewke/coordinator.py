@@ -165,27 +165,32 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
         async def _retry() -> None:
             try:
-                await self.ensure_observe()
+                await self._ensure_observe()
             finally:
                 if self._observe_retry_task is asyncio.current_task():
                     self._observe_retry_task = None
 
         self._observe_retry_task = self.hass.async_create_task(_retry())
 
-    async def ensure_observe(self) -> None:
+    async def ensure_data(self) -> None:
+        """Ensure the coordinator has up-to-date data, fetching manually if no successful observations."""
+        successful_observe = await self._ensure_observe()
+        if not successful_observe:
+            await self._update_manual_data()
+
+    async def _ensure_observe(self) -> bool:
+        """Ensure CoAP observe is active, setting up if not."""
         async with self._observe_setup_lock:
             if self.config_entry.runtime_data.observe_active:
-                return
+                return True
             LOGGER.info(
                 "CoAP observations not active for %s; attempting to re-establish",
                 self.config_entry.entry_id,
             )
-            await async_setup_observe(self, self.hass, self.config_entry)
+            return await async_setup_observe(self, self.hass, self.config_entry)
 
-    async def _async_update_data(self) -> TewkeCoordinatorData:
-        """Fetch current state for all resources, retrying on transient errors."""
-        await self.ensure_observe()
-
+    async def _update_manual_data(self) -> TewkeCoordinatorData:
+        """Fetch the current state for all resources, retrying on transient errors."""
         tap = self.config_entry.runtime_data.tap
 
         try:
@@ -260,3 +265,8 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             energy=energy,
             config=config,
         )
+
+    async def _async_update_data(self) -> TewkeCoordinatorData:
+        """Ensure observe is set up and fetch current state for all resources, retrying on transient errors."""
+        await self._ensure_observe()
+        return await self._update_manual_data()

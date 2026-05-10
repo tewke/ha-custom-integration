@@ -165,14 +165,14 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
         async def _retry() -> None:
             try:
-                await self._setup_observe()
+                await self.ensure_observe()
             finally:
                 if self._observe_retry_task is asyncio.current_task():
                     self._observe_retry_task = None
 
         self._observe_retry_task = self.hass.async_create_task(_retry())
 
-    async def _setup_observe(self) -> None:
+    async def ensure_observe(self) -> None:
         async with self._observe_setup_lock:
             if self.config_entry.runtime_data.observe_active:
                 return
@@ -184,7 +184,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
     async def _async_update_data(self) -> TewkeCoordinatorData:
         """Fetch current state for all resources, retrying on transient errors."""
-        await self._setup_observe()
+        await self.ensure_observe()
 
         tap = self.config_entry.runtime_data.tap
 

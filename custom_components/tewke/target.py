@@ -103,7 +103,7 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             if target is not None:
                 target.is_on = tewke_brightness != 0
                 target.brightness = tewke_brightness
-            self.async_write_ha_state()
+                self.async_write_ha_state()
             await self.coordinator.async_request_refresh()
         except PyTewkeInvalidWallDockError:
             LOGGER.error(

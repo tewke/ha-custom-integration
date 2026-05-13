@@ -169,6 +169,11 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         async def _retry() -> None:
             try:
                 await self.config_entry.runtime_data.tap.retry_observes()
+            except Exception:
+                self.logger.exception(
+                    "Failed to retry CoAP observations for tap %s",
+                    self.config_entry.runtime_data.tap.wall_dock_id,
+                )
             finally:
                 if self._observe_retry_task is asyncio.current_task():
                     self._observe_retry_task = None

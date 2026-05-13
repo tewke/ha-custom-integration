@@ -128,7 +128,8 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         )
 
     def reset_observation_timeout(self) -> None:
-        """Restart the inactivity timer; call this on every received observation.
+        """
+        Restart the inactivity timer; call this on every received observation.
 
         Runs on the event loop (CoAP callbacks are async), so async_call_later
         is safe to use directly — no call_soon_threadsafe required.
@@ -140,7 +141,8 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         )
 
     def cancel_observation_timeout(self) -> None:
-        """Cancel the pending inactivity timer and any in-flight retry task.
+        """
+        Cancel the pending inactivity timer and any in-flight retry task.
 
         Called on entry unload to prevent the retry task from running against
         stale runtime_data after the entry has been torn down.
@@ -166,7 +168,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
         async def _retry() -> None:
             try:
-                await self._setup_observe()
+                await self.config_entry.runtime_data.tap.retry_observes()
             finally:
                 if self._observe_retry_task is asyncio.current_task():
                     self._observe_retry_task = None
@@ -184,7 +186,8 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             await async_setup_observe(self, self.hass, self.config_entry)
 
     async def _async_update_data(self) -> TewkeCoordinatorData:
-        """Fetch current state for all resources, retrying on transient errors.
+        """
+        Fetch current state for all resources, retrying on transient errors.
 
         If CoAP observations are active and we already have data, skip the
         manual fetch entirely — observations will keep the data current.

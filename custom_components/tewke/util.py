@@ -71,6 +71,7 @@ async def async_setup_observe(
     """
     tap = entry.runtime_data.tap
 
+    tap.clear_callbacks()
     await tap._observation_manager.close()  # noqa: SLF001
 
     def _on_scene_update(scenes: dict[str, Scene]) -> None:

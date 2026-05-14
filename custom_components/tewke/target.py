@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
+from homeassistant.core import callback
 from pytewke.error import (
     PyTewkeCoapError,
     PyTewkeInvalidRequestError,
@@ -60,6 +61,14 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
     @property
     def _target(self) -> Target | None:
         return self.coordinator.data["targets"].get(self._target_index)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync target name from coordinator data before writing state."""
+        target = self._target
+        if target is not None:
+            self._attr_name = target.name
+        super()._handle_coordinator_update()
 
     @property
     def available(self) -> bool:

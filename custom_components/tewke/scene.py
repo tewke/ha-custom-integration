@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.core import callback
 from pytewke.error import (
     PyTewkeCoapError,
     PyTewkeInvalidRequestError,
@@ -60,6 +61,14 @@ class TewkeSceneEntity(TewkeEntity):
     @property
     def _scene(self) -> Scene | None:
         return self.coordinator.data["scenes"].get(self._scene_id)
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync scene name from coordinator data before writing state."""
+        scene = self._scene
+        if scene is not None:
+            self._attr_name = scene.name
+        super()._handle_coordinator_update()
 
     @property
     def available(self) -> bool:

@@ -4,7 +4,7 @@
 [![Validate HACS](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml/badge.svg)](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml)
 [![Validate hassfest](https://github.com/tewke/hacs-integration/actions/workflows/hassfest.yml/badge.svg)](https://github.com/tewke/hacs-integration/actions/workflows/hassfest.yml)
 
-- [ Tewke Home Assistant Integration](#Tewke-Home-Assistant-Integration)
+- [Tewke Home Assistant Integration](#tewke-home-assistant-integration)
     - [Features](#features)
     - [Prerequisites](#prerequisites)
     - [How to install](#how-to-install)

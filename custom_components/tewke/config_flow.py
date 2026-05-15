@@ -238,7 +238,7 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_confirmation(
         self, user_input: dict[str, str] | None = None
     ) -> ConfigFlowResult:
-        """Present  confirmation before creating the config entry."""
+        """Show confirmation before creating the config entry."""
         if user_input is not None:
             data = {
                 CONF_HOST: self._discovered_host,

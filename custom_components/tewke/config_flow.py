@@ -71,7 +71,7 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_reconfigure(
         self,
-        user_input: dict[str, str] | None = None,  # noqa: ARG002
+        _user_input: dict[str, str] | None = None,
     ) -> ConfigFlowResult:
         """Handle a reconfiguration flow initialised by the user."""
         entry = self._get_reconfigure_entry()
@@ -238,7 +238,7 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_confirmation(
         self, user_input: dict[str, str] | None = None
     ) -> ConfigFlowResult:
-        """Final confirmation before creating the config entry."""  # noqa: D401
+        """Present  confirmation before creating the config entry."""
         if user_input is not None:
             data = {
                 CONF_HOST: self._discovered_host,

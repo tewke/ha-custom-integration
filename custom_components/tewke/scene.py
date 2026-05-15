@@ -200,6 +200,8 @@ class TewkeSceneFan(TewkeSceneEntity, FanEntity):
         | FanEntityFeature.TURN_OFF
     )
 
+    _MAX_SPEED = 100
+
     def __init__(
         self,
         coordinator: TewkeCoordinator,
@@ -224,8 +226,9 @@ class TewkeSceneFan(TewkeSceneEntity, FanEntity):
         """
         Return True when the scene is active.
 
-        If the device reports a brightness of 100, substitute the configured
-        default dimming value so the entity never reflects a raw 100% reading.
+        If the device reports a brightness of _MAX_SPEED (100), substitute the
+        configured default dimming value so the entity never reflects a raw
+        reading of _MAX_SPEED.
         """
         scene = self._scene
         if scene is not None:
@@ -233,7 +236,7 @@ class TewkeSceneFan(TewkeSceneEntity, FanEntity):
             if scene.brightness is not None:
                 self._brightness = (
                     self._default_dimming
-                    if scene.brightness == 100  # noqa: PLR2004
+                    if scene.brightness == self._MAX_SPEED
                     else scene.brightness
                 )
         return self._is_on
@@ -245,23 +248,22 @@ class TewkeSceneFan(TewkeSceneEntity, FanEntity):
     async def async_turn_on(
         self,
         percentage: int | None = None,
-        preset_mode: str | None = None,  # noqa: ARG002
+        _preset_mode: str | None = None,
         **_kwargs: object,
     ) -> None:
         """
         Turn on the fan at the requested speed.
 
         When no percentage is given, the current device speed is used unless it
-        is at maximum (100), in which case the configured default speed is used.
+        is at _MAX_SPEED (100), in which case the configured default speed is used.
         """
-        _MAX_SPEED = 100  # noqa: N806
         if percentage is not None:
             target = percentage
         else:
             current = self.percentage
             target = (
                 self._default_dimming
-                if current is None or current == _MAX_SPEED
+                if current is None or current == self._MAX_SPEED
                 else current
             )
         await self._async_set_percentage(target)

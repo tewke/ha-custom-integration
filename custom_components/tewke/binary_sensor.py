@@ -53,7 +53,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[TewkeBinarySensorEntityDescription, ...] = (
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,  # noqa: ARG001
+    _hass: HomeAssistant,
     entry: TewkeConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:

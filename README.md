@@ -1,9 +1,9 @@
-# Home Assistant Tewke
+# Tewke Home Assistant Integration
 
-![status_badge](https://img.shields.io/badge/status-alpha-red) 
+![status_badge](https://img.shields.io/badge/status-beta-red) 
 [![Validate HACS](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml/badge.svg)](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml) 
 [![Validate hassfest](https://github.com/tewke/hacs-integration/actions/workflows/hassfest.yml/badge.svg)](https://github.com/tewke/hacs-integration/actions/workflows/hassfest.yml)
-- [Home Assistant Tewke](#home-assistant-tewke)
+- [ Tewke Home Assistant Integration](#home-assistant-tewke)
   - [Features](#features)
   - [Prerequisites](#prerequisites)
   - [How to install](#how-to-install)
@@ -16,13 +16,12 @@ A pre-release Home Assistant integration for Tewke devices.
 ## Features
 
 - [x] Scene control
-  - [x] As lights, fans, or switches
+  - [x] As lights
+  - [x] As fans
+  - [x] As switches
 - [x] Target control (default disabled)
 - [x] Sensor data
-- [ ] Repair flows:
-  - [x] New Scenes
-  - [ ] Rename Scenes
-- [x] Handle deleted Scenes
+- [x] Repair flow for new Scenes
 - [x] Reconfigure flow
 
 

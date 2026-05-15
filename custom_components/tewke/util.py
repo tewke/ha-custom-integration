@@ -58,7 +58,7 @@ def _ha_to_tewke_brightness(value: int) -> int:
     return round(value / 255 * 100)
 
 
-async def async_setup_observe(
+async def async_setup_observe(  # noqa: PLR0915
     coordinator: TewkeCoordinator,
     hass: HomeAssistant,
     entry: TewkeConfigEntry,

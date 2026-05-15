@@ -12,26 +12,35 @@
         - [Manual](#manual)
     - [Issues](#issues)
 
-A pre-release Home Assistant integration for Tewke devices.
+A Home Assistant integration for Tewke devices.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tewke&repository=hacs-integration&category=integration)
 
 ## Features
 
-- [x] Scene control
+- [x] Scene control[^1]
     - [x] As lights
-    - [x] As fans
+    - [x] As fans[^2]
     - [x] As switches
 - [x] Target control (default disabled)
 - [x] Sensor data
 - [x] Repair flow for new Scenes
 - [x] Reconfigure flow
 
+[^1] – This only affects how the Scenes appear in Home Assistant. The Wall
+Dock only supports resistive or near-resistive loads.
+
+[^2] – **The Tewke Tap Wall Dock does not support inductive loads. Connecting
+a fan or other inductive device will result in permanent damage to your
+hardware.** This is strictly a convenience feature for separating a Scene
+that controls something other than lights from the rest of the Scenes.
+
 ## Prerequisites
 
 Before you can use this integration, you need to enable the CoAP server on
 your Tewke Tap Panel. The controls for this will be available in the Tewke
-mobile app when the feature is ready for general availability.
+mobile app when the feature is ready for general availability. To enable CoAP
+now, please reach out to Tewke at contact@tewke.com for instructions.
 
 You will also need to have [HACS](https://www.hacs.xyz/) installed on your
 instance of Home Assistant.

@@ -46,7 +46,7 @@ Click the following button to add this repository to HACS and install it:
 
 ### Manual
 
-You should use the latest commit on [main](https://github.com/tewke/hacs-integration/tree/main).
+You should use the [latest release on Github](https://github.com/tewke/hacs-integration/releases/latest).
 
 To install, place the contents of `custom_components` into the
 `<config directory>/custom_components` folder of your Home Assistant

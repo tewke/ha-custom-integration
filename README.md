@@ -14,6 +14,8 @@
 
 A pre-release Home Assistant integration for Tewke devices.
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tewke&repository=hacs-integration&category=integration)
+
 ## Features
 
 - [x] Scene control
@@ -40,9 +42,7 @@ There are multiple ways of installing the integration.
 
 ### HACS
 
-Click the following button to add this repository to HACS and install it:
-
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tewke&repository=hacs-integration&category=integration)
+Click the button at the top of this readme to add this repository to HACS and install it.
 
 ### Manual
 

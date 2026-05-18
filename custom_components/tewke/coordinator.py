@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from pytewke.data import (
         ConfigData,
         EnergyData,
+        EnergyOverrideData,
         RadarData,
         Scene,
         SensorData,
@@ -88,6 +89,7 @@ class TewkeCoordinatorData(TypedDict):
     sensors: SensorData | None
     radar: RadarData | None
     energy: EnergyData | None
+    energy_override: EnergyOverrideData | None
     config: ConfigData | None
 
 
@@ -259,6 +261,17 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             energy = None
 
         try:
+            energy_override: EnergyOverrideData | None = await tap.get_energy_override()
+        except (
+            PyTewkeCoapError,
+            PyTewkeInvalidResponseError,
+            PyTewkeUnknownError,
+            TimeoutError,
+        ) as err:
+            LOGGER.debug("Energy override data not available from Tewke Tap: %s", err)
+            energy_override = None
+
+        try:
             config: ConfigData | None = await tap.get_config()
         except (
             PyTewkeCoapError,
@@ -276,5 +289,6 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             sensors=sensors,
             radar=radar,
             energy=energy,
+            energy_override=energy_override,
             config=config,
         )

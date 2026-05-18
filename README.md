@@ -1,8 +1,8 @@
 # Tewke Home Assistant Integration
 
 ![status_badge](https://img.shields.io/badge/status-beta-red)
-[![Validate HACS](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml/badge.svg)](https://github.com/tewke/hacs-integration/actions/workflows/hacs.yml)
-[![Validate hassfest](https://github.com/tewke/hacs-integration/actions/workflows/hassfest.yml/badge.svg)](https://github.com/tewke/hacs-integration/actions/workflows/hassfest.yml)
+[![Validate HACS](https://github.com/tewke/ha-custom-integration/actions/workflows/hacs.yml/badge.svg)](https://github.com/tewke/ha-custom-integration/actions/workflows/hacs.yml)
+[![Validate hassfest](https://github.com/tewke/ha-custom-integration/actions/workflows/hassfest.yml/badge.svg)](https://github.com/tewke/ha-custom-integration/actions/workflows/hassfest.yml)
 
 - [Tewke Home Assistant Integration](#tewke-home-assistant-integration)
     - [Features](#features)
@@ -14,7 +14,7 @@
 
 A Home Assistant integration for Tewke devices.
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tewke&repository=hacs-integration&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=tewke&repository=ha-custom-integration&category=integration)
 
 ## Features
 
@@ -55,7 +55,7 @@ Click the button at the top of this readme to add this repository to HACS and in
 
 ### Manual
 
-You should use the [latest release on Github](https://github.com/tewke/hacs-integration/releases/latest).
+You should use the [latest release on Github](https://github.com/tewke/ha-custom-integration/releases/latest).
 
 To install, place the contents of `custom_components` into the
 `<config directory>/custom_components` folder of your Home Assistant
@@ -64,4 +64,4 @@ instance for the integration to be picked up.
 
 ## Issues
 
-If you have found a bug or have a feature request, please [raise it](https://github.com/tewke/hacs-integration/issues).
+If you have found a bug or have a feature request, please [raise it](https://github.com/tewke/ha-custom-integration/issues).

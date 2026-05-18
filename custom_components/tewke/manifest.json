@@ -5,10 +5,10 @@
     "@1NFR4R3D"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/tewke/hacs-integration",
+  "documentation": "https://github.com/tewke/ha-custom-integration",
   "integration_type": "device",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/tewke/hacs-integration/issues",
+  "issue_tracker": "https://github.com/tewke/ha-custom-integration/issues",
   "loggers": [
     "pytewke"
   ],

@@ -938,7 +938,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hacs-integration"
+name = "ha-custom-integration"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

@@ -902,6 +902,37 @@ wheels = [
 ]
 
 [[package]]
+name = "ha-custom-integration"
+version = "0.1.1"
+source = { virtual = "." }
+dependencies = [
+    { name = "colorlog" },
+    { name = "homeassistant" },
+    { name = "pytewke" },
+    { name = "voluptuous" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "black" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "colorlog", specifier = "==6.10.1" },
+    { name = "homeassistant", specifier = "==2026.5.1" },
+    { name = "pytewke", specifier = "==0.5.1" },
+    { name = "voluptuous", specifier = ">=0.15.2" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "black", specifier = ">=26.3.1" },
+    { name = "ruff", specifier = ">=0.15.8" },
+]
+
+[[package]]
 name = "habluetooth"
 version = "5.11.2"
 source = { registry = "https://pypi.org/simple" }
@@ -935,37 +966,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8c/1e/f62f94c38a5e28e81728423e6402fcc33fbf58cb1e59cf512f2569dd0fe9/habluetooth-5.11.2-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:5f15a095d032b91258c71bb387155dcda30d74ef9c7715733f6ba77dab2b8f0b", size = 1377465, upload-time = "2026-03-28T00:13:31.499Z" },
     { url = "https://files.pythonhosted.org/packages/f3/62/2d3a07d790ecc01198d19c9fb569595125cd1a84df50391516163c66af3d/habluetooth-5.11.2-cp314-cp314t-win32.whl", hash = "sha256:f118700eaeaafbf998cedf82b75641f61fd2c0c8855ce8196cfdac4510cf9aeb", size = 973241, upload-time = "2026-03-28T00:13:33.129Z" },
     { url = "https://files.pythonhosted.org/packages/5c/f9/a2deb9acfe08bfdf211ab609687a66222c39ca97328fd7d733f9542297ae/habluetooth-5.11.2-cp314-cp314t-win_amd64.whl", hash = "sha256:ce6e4a0cb6ab6081901696e8990f4236608ad41c5bf845f1b714e925058a7559", size = 1147077, upload-time = "2026-03-28T00:13:35.173Z" },
-]
-
-[[package]]
-name = "ha-custom-integration"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "colorlog" },
-    { name = "homeassistant" },
-    { name = "pytewke" },
-    { name = "voluptuous" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "black" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "colorlog", specifier = "==6.10.1" },
-    { name = "homeassistant", specifier = "==2026.5.1" },
-    { name = "pytewke", specifier = "==0.5.1" },
-    { name = "voluptuous", specifier = ">=0.15.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "black", specifier = ">=26.3.1" },
-    { name = "ruff", specifier = ">=0.15.8" },
 ]
 
 [[package]]

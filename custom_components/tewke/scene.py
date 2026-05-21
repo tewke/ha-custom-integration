@@ -28,9 +28,13 @@ from pytewke.error import (
     PyTewkeUnknownError,
 )
 
-from .const import LOGGER
+from .const import DEFAULT_SCENE_FAN_DIMMING, LOGGER
 from .entity import TewkeEntity
-from .util import _ha_to_tewke_brightness, _tewke_to_ha_brightness
+from .util import (
+    _get_default_scene_fan_dimming,
+    _ha_to_tewke_brightness,
+    _tewke_to_ha_brightness,
+)
 
 if TYPE_CHECKING:
     from pytewke.data import Scene
@@ -207,12 +211,17 @@ class TewkeSceneFan(TewkeSceneEntity, FanEntity):
         coordinator: TewkeCoordinator,
         scene: Scene,
         *,
-        default_dimming: int = 50,
         enabled_default: bool = True,
     ) -> None:
         """Initialise the scene fan."""
         super().__init__(coordinator, scene, enabled_default=enabled_default)
-        self._default_dimming = default_dimming
+
+    @property
+    def _default_dimming(self) -> int:
+        """Return the configured default fan speed, read fresh from entry data."""
+        return _get_default_scene_fan_dimming(self.coordinator.config_entry).get(
+            self._scene_id, DEFAULT_SCENE_FAN_DIMMING
+        )
 
     async def _async_set_percentage(self, percentage: int | None) -> None:
         """Set fan speed. A percentage of 0 turns the fan off."""

@@ -56,7 +56,16 @@ class TewkeSceneEntity(TewkeEntity):
         super().__init__(coordinator)
         self._scene_id = scene.id
         self._attr_name = scene.name
-        hardware_id = coordinator.data["config"].hardware_id
+        config = coordinator.data["config"]
+        if config is None:
+            LOGGER.error(
+                "Cannot create scene entity for %s: config data is None "
+                "(hardware_id unavailable)",
+                scene.id,
+            )
+            msg = f"config data is None for scene {scene.id}"
+            raise RuntimeError(msg)
+        hardware_id = config.hardware_id
         self._attr_unique_id = f"{hardware_id}_{scene.id}"
         self._is_on = scene.is_active
         self._brightness: int | None = scene.brightness

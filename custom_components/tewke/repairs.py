@@ -181,6 +181,13 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
         }
         scene_configs = user_input.items()
 
+        # Collect new scene mappings into a copy so async_update_entry can detect
+        # the change (the live dict is the same object as
+        # entry.data["scene_control_types"], so mutating it in-place would make
+        # the comparison see "no change").
+        new_scene_ctrl: dict[str, str] = dict(scene_control_types)
+        new_scene_ids: list[tuple[str, str]] = []
+
         for index_name, config in scene_configs:
             if index_name not in index_name_to_id:
                 continue
@@ -199,12 +206,21 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
                 continue
 
             added_scenes.append(pending[scene_id])
-
-            scene_control_types[scene_id] = scene_text
+            new_scene_ctrl[scene_id] = scene_text
+            new_scene_ids.append((scene_id, scene_text))
             if not enabled_text:
                 newly_disabled.append(scene_id)
 
             del pending[scene_id]
+
+        LOGGER.debug(
+            "Repair apply: adding %d scene(s) %s; "
+            "scene_control_types before=%s after=%s",
+            len(added_scenes),
+            [s.id for s in added_scenes],
+            list(scene_control_types),
+            list(new_scene_ctrl),
+        )
 
         existing_disabled: list[str] = list(
             self.entry.data.get(CONF_DISABLED_SCENES, [])
@@ -216,15 +232,23 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
         existing_fan_dimming = _get_default_scene_fan_dimming(self.entry)
         merged_fan_dimming = {**existing_fan_dimming, **(fan_dimming or {})}
 
+        # Persist with the new copy — entry.data["scene_control_types"] currently
+        # points to the live dict (no mutation yet) so the diff is detected correctly.
         self.hass.config_entries.async_update_entry(
             self.entry,
             data={
                 **self.entry.data,
-                "scene_control_types": scene_control_types,
+                "scene_control_types": new_scene_ctrl,
                 CONF_DISABLED_SCENES: merged_disabled,
                 CONF_DEFAULT_SCENE_FAN_DIMMING: merged_fan_dimming,
             },
         )
+
+        # Now apply the same changes to the live dict so platform closures
+        # (fan.py / light.py / switch.py) — which captured this dict at setup
+        # time — see the updated mappings immediately.
+        for sid, text in new_scene_ids:
+            scene_control_types[sid] = text
 
         coordinator = self.entry.runtime_data.coordinator
         scenes_all = coordinator.data.get("scenes_all", {})
@@ -233,6 +257,11 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
             for sid, scene in scenes_all.items()
             if sid in scene_control_types
         }
+        LOGGER.debug(
+            "Repair apply: scenes_all keys=%s, configured_scenes keys=%s",
+            list(scenes_all),
+            list(configured_scenes),
+        )
         coordinator.async_set_updated_data(
             {
                 **coordinator.data,
@@ -241,6 +270,10 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
         )
 
         if added_scenes:
+            LOGGER.debug(
+                "Repair apply: dispatching ADD_SCENES for %s",
+                [s.id for s in added_scenes],
+            )
             async_dispatcher_send(self.hass, DISPATCHER_ADD_SCENES, added_scenes)
 
         if not pending:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import CONF_DISABLED_SCENES, DISPATCHER_ADD_SCENES
+from .const import CONF_DISABLED_SCENES, DISPATCHER_ADD_SCENES, LOGGER
 from .scene import TewkeSceneSwitch
 
 if TYPE_CHECKING:
@@ -40,6 +40,16 @@ async def async_setup_entry(
 
     @callback
     def _async_add_new_scenes(scenes: list[Scene]) -> None:
+        switch_scenes = [
+            s for s in scenes if scene_control_types.get(s.id) == "switch"
+        ]
+        LOGGER.debug(
+            "switch._async_add_new_scenes: received %s, switch matches=%s, "
+            "scene_control_types=%s",
+            [s.id for s in scenes],
+            [s.id for s in switch_scenes],
+            dict(scene_control_types),
+        )
         async_add_entities(
             TewkeSceneSwitch(
                 coordinator=coordinator,
@@ -47,8 +57,7 @@ async def async_setup_entry(
                 enabled_default=scene.id
                 not in entry.data.get(CONF_DISABLED_SCENES, []),
             )
-            for scene in scenes
-            if scene_control_types.get(scene.id) == "switch"
+            for scene in switch_scenes
         )
 
     entry.async_on_unload(

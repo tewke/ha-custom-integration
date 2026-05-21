@@ -95,13 +95,20 @@ async def async_setup_observe(  # noqa: PLR0915
             LOGGER.info(
                 "Marking deleted scenes as unavailable: %s", removed_configured_ids
             )
-            new_scene_control_types = dict(scene_control_types)
 
-            for sid in removed_configured_ids:
-                del new_scene_control_types[sid]
+            # Build a copy of scene_control_types *before* mutating the live
+            # dict so async_update_entry can detect the change
+            # (entry.data["scene_control_types"] is the same object as the live
+            # dict, so in-place mutation would make the comparison see "no change"
+            # and skip the save).
+            new_scene_ctrl = {
+                sid: text
+                for sid, text in scene_control_types.items()
+                if sid not in removed_configured_ids
+            }
 
             new_data = dict(entry.data)
-            new_data["scene_control_types"] = new_scene_control_types
+            new_data["scene_control_types"] = new_scene_ctrl
 
             if CONF_DISABLED_SCENES in new_data:
                 new_data[CONF_DISABLED_SCENES] = [
@@ -115,9 +122,12 @@ async def async_setup_observe(  # noqa: PLR0915
                     new_fan_dimming.pop(sid, None)
                 new_data[CONF_DEFAULT_SCENE_FAN_DIMMING] = new_fan_dimming
 
-            entry.runtime_data.scene_control_types = new_scene_control_types
             hass.config_entries.async_update_entry(entry, data=new_data)
-            return
+
+            # Mutate the live dict *after* persisting so platform closures see the
+            # removal immediately, while the persistence diff above was correct.
+            for sid in removed_configured_ids:
+                del scene_control_types[sid]
 
         configured_scenes = {
             scene_id: scene
@@ -125,6 +135,13 @@ async def async_setup_observe(  # noqa: PLR0915
             if scene_id in scene_control_types
         }
 
+        LOGGER.debug(
+            "_on_scene_update: device_scenes=%s, scene_control_types=%s, "
+            "configured=%s",
+            list(scenes),
+            list(scene_control_types),
+            list(configured_scenes),
+        )
         coordinator.async_set_updated_data(
             {
                 **coordinator.data,

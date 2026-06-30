@@ -173,7 +173,7 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
     ) -> FlowResult:
         """Commit all configured scene control types and update HA state."""
         pending: dict[str, Scene] = self.entry.runtime_data.pending_scenes
-        scene_control_types = self.entry.runtime_data.scene_control_types
+        new_control_types = self.entry.runtime_data.scene_control_types.copy()
         added_scenes: list[Scene] = []
         newly_disabled = []
         index_name_to_id = {
@@ -200,7 +200,7 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
 
             added_scenes.append(pending[scene_id])
 
-            scene_control_types[scene_id] = scene_text
+            new_control_types[scene_id] = scene_text
             if not enabled_text:
                 newly_disabled.append(scene_id)
 
@@ -220,18 +220,17 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
             self.entry,
             data={
                 **self.entry.data,
-                "scene_control_types": scene_control_types,
+                "scene_control_types": new_control_types,
                 CONF_DISABLED_SCENES: merged_disabled,
                 CONF_DEFAULT_SCENE_FAN_DIMMING: merged_fan_dimming,
             },
         )
+        self.entry.runtime_data.scene_control_types = new_control_types
 
         coordinator = self.entry.runtime_data.coordinator
         scenes_all = coordinator.data.get("scenes_all", {})
         configured_scenes = {
-            sid: scene
-            for sid, scene in scenes_all.items()
-            if sid in scene_control_types
+            sid: scene for sid, scene in scenes_all.items() if sid in new_control_types
         }
         coordinator.async_set_updated_data(
             {

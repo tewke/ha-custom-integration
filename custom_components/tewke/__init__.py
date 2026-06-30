@@ -60,6 +60,7 @@ async def async_setup_entry(
     await tewke_coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
     entry.async_on_unload(tewke_coordinator.cancel_observation_timeout)
     entry.async_on_unload(tap.close)
 
@@ -72,3 +73,11 @@ async def async_unload_entry(
 ) -> bool:
     """Handle removal of an entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_reload_entry(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+) -> None:
+    """Reload config entry."""
+    await hass.config_entries.async_reload(entry.entry_id)

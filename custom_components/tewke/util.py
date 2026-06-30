@@ -81,7 +81,7 @@ async def async_setup_observe(  # noqa: PLR0915
         This callback is triggered when the scenes on the device change. It
         identifies new scenes and creates a repair issue to configure them.
         """
-        coordinator.reset_observation_timeout()
+        coordinator.reset_observation_timeout("scene")
         if coordinator.data is None:
             return
 
@@ -172,7 +172,7 @@ async def async_setup_observe(  # noqa: PLR0915
         This callback is triggered when the targets on the device change.
         It updates the coordinator with the new target data.
         """
-        coordinator.reset_observation_timeout()
+        coordinator.reset_observation_timeout("target")
         if coordinator.data is None:
             return
 
@@ -189,7 +189,7 @@ async def async_setup_observe(  # noqa: PLR0915
 
         This callback is triggered when the sensors on the device change.
         """
-        coordinator.reset_observation_timeout()
+        coordinator.reset_observation_timeout("sensor")
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "sensors": sensor_data})
@@ -200,7 +200,7 @@ async def async_setup_observe(  # noqa: PLR0915
 
         This callback is triggered when the radar on the device changes.
         """
-        coordinator.reset_observation_timeout()
+        coordinator.reset_observation_timeout("radar")
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "radar": radar_data})
@@ -211,7 +211,7 @@ async def async_setup_observe(  # noqa: PLR0915
 
         This callback is triggered when the energy on the device changes.
         """
-        coordinator.reset_observation_timeout()
+        coordinator.reset_observation_timeout("energy")
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "energy": energy_data})
@@ -222,7 +222,7 @@ async def async_setup_observe(  # noqa: PLR0915
 
         This callback is triggered when the config on the device changes.
         """
-        coordinator.reset_observation_timeout()
+        coordinator.reset_observation_timeout("config")
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "config": config_data})
@@ -261,11 +261,11 @@ async def async_setup_observe(  # noqa: PLR0915
             exc_info=True,
         )
         entry.runtime_data.observe_active = False
-        coordinator.reset_observation_timeout()
+        coordinator.reset_all_observation_timeouts()
         return False
 
     entry.runtime_data.observe_active = True
-    coordinator.reset_observation_timeout()
+    coordinator.reset_all_observation_timeouts()
 
     # Process scenes already fetched during initial discovery
     if coordinator.data and "scenes_all" in coordinator.data:

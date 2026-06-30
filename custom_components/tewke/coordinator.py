@@ -124,34 +124,41 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         )
         self._observe_setup_lock = asyncio.Lock()
         self._observe_retry_task: asyncio.Task[None] | None = None
-        self._observation_timeout_unsub: Callable[[], None] | None = None
+        self._observation_timeout_unsubs: dict[str, Callable[[], None]] = {}
         self._observation_timeout_job = HassJob(
             self._handle_observation_timeout, cancel_on_shutdown=True
         )
 
-    def reset_observation_timeout(self) -> None:
+    def reset_observation_timeout(self, resource: str) -> None:
         """
-        Restart the inactivity timer; call this on every received observation.
+        Restart the inactivity timer for a specific resource.
+
+        Call this on every received observation.
 
         Runs on the event loop (CoAP callbacks are async), so async_call_later
         is safe to use directly — no call_soon_threadsafe required.
         """
-        if self._observation_timeout_unsub is not None:
-            self._observation_timeout_unsub()
-        self._observation_timeout_unsub = async_call_later(
+        if unsub := self._observation_timeout_unsubs.get(resource):
+            unsub()
+        self._observation_timeout_unsubs[resource] = async_call_later(
             self.hass, _OBSERVATION_TIMEOUT_SECS, self._observation_timeout_job
         )
 
+    def reset_all_observation_timeouts(self) -> None:
+        """Restart the inactivity timers for all resources."""
+        for resource in ("scene", "target", "sensor", "radar", "energy", "config"):
+            self.reset_observation_timeout(resource)
+
     def cancel_observation_timeout(self) -> None:
         """
-        Cancel the pending inactivity timer and any in-flight retry task.
+        Cancel the pending inactivity timers and any in-flight retry task.
 
         Called on entry unload to prevent the retry task from running against
         stale runtime_data after the entry has been torn down.
         """
-        if self._observation_timeout_unsub is not None:
-            self._observation_timeout_unsub()
-            self._observation_timeout_unsub = None
+        for unsub in self._observation_timeout_unsubs.values():
+            unsub()
+        self._observation_timeout_unsubs.clear()
         if self._observe_retry_task is not None and not self._observe_retry_task.done():
             self._observe_retry_task.cancel()
             self._observe_retry_task = None
@@ -163,7 +170,9 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             "Observations timed out for tap %s, retrying",
             self.config_entry.runtime_data.tap.wall_dock_id,
         )
-        self._observation_timeout_unsub = None
+        for unsub in self._observation_timeout_unsubs.values():
+            unsub()
+        self._observation_timeout_unsubs.clear()
         self.config_entry.runtime_data.observe_active = False
         if self._observe_retry_task is not None and not self._observe_retry_task.done():
             return

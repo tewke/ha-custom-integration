@@ -226,20 +226,25 @@ async def async_setup_observe(  # noqa: PLR0915
         if coordinator.data is None:
             return
         coordinator.async_set_updated_data({**coordinator.data, "config": config_data})
+        device_registry = dr.async_get(hass)
+        device_id = tap.wall_dock_id
+        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
 
-        new_name = config_data.device_name
-        if new_name and new_name != entry.data.get(CONF_NAME):
-            LOGGER.debug("Device renamed to %r, updating HA", new_name)
-            hass.config_entries.async_update_entry(
-                entry,
-                title=new_name,
-                data={**entry.data, CONF_NAME: new_name},
-            )
-            device_registry = dr.async_get(hass)
-            device_id = tap.wall_dock_id
-            device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
-            if device:
+        if device:
+            new_name = config_data.device_name
+            if new_name and new_name != entry.data.get(CONF_NAME):
+                LOGGER.debug("Device renamed to %r, updating HA", new_name)
+                hass.config_entries.async_update_entry(
+                    entry,
+                    title=new_name,
+                    data={**entry.data, CONF_NAME: new_name},
+                )
                 device_registry.async_update_device(device.id, name=new_name)
+
+            new_version = config_data.tewke_os_version
+            if new_version and new_version != device.sw_version:
+                LOGGER.debug("Device updated to %r, updating HA", new_version)
+                device_registry.async_update_device(device.id, sw_version=new_version)
 
     try:
         LOGGER.debug(

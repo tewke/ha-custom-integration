@@ -168,17 +168,25 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         if self._observe_retry_task is not None and not self._observe_retry_task.done():
             return
 
+        _observe_delays: list[int] = [30, 60, 90]
+
         async def _retry() -> None:
-            try:
-                await self.config_entry.runtime_data.tap.retry_observes()
-            except Exception:
-                self.logger.exception(
-                    "Failed to retry CoAP observations for tap %s",
-                    self.config_entry.runtime_data.tap.wall_dock_id,
-                )
-            finally:
-                if self._observe_retry_task is asyncio.current_task():
-                    self._observe_retry_task = None
+            for attempt, delay in enumerate(_observe_delays):
+                try:
+                    await self.config_entry.runtime_data.tap.retry_observes()
+                    break
+                except Exception:
+                    self.logger.exception(
+                        "Failed to retry CoAP observations for tap %s,"
+                        " retrying in %.0fs (attempt %d/%d)",
+                        self.config_entry.runtime_data.tap.wall_dock_id,
+                        delay,
+                        attempt + 1,
+                        len(_observe_delays) + 1,
+                    )
+                    await asyncio.sleep(delay)
+            if self._observe_retry_task is asyncio.current_task():
+                self._observe_retry_task = None
 
         self._observe_retry_task = self.hass.async_create_task(_retry())
 

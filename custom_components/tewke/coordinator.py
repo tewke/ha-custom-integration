@@ -182,9 +182,10 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
                         self.config_entry.runtime_data.tap.wall_dock_id,
                         delay,
                         attempt + 1,
-                        len(_observe_delays) + 1,
+                        len(_observe_delays),
                     )
-                    await asyncio.sleep(delay)
+                    if attempt < len(_observe_delays) - 1:
+                        await asyncio.sleep(delay)
             if self._observe_retry_task is asyncio.current_task():
                 self._observe_retry_task = None
 

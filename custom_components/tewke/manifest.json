@@ -16,7 +16,7 @@
   "requirements": [
     "pytewke==0.6.0"
   ],
-  "version": "0.1.9",
+  "version": "0.1.10",
   "zeroconf": [
     {
       "type": "_tewke-coap._udp.local."

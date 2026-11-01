@@ -26,10 +26,11 @@ class TewkeEntity(CoordinatorEntity[TewkeCoordinator]):
         super().__init__(coordinator)
         entry = coordinator.config_entry
         tap = entry.runtime_data.tap
-        wall_dock_id = tap.wall_dock_id
+        wall_dock_id = tap.wall_dock_id or entry.unique_id
         if wall_dock_id is None:
             msg = "Tewke device missing wall_dock_id"
             raise ValueError(msg)
+        self._hardware_id = wall_dock_id
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, wall_dock_id)},
             name=entry.data.get(CONF_NAME, "Tewke"),

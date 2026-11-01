@@ -42,10 +42,29 @@ async def async_setup_entry(
         TewkeTargetLight(coordinator=coordinator, target=target)
         for target in coordinator.data["targets"].values()
     ]
+    known_target_indices: set[int] = set(coordinator.data["targets"].keys())
     async_add_entities(entities)
 
     @callback
+    def _async_check_new_targets() -> None:
+        if not coordinator.data:
+            return
+        targets = coordinator.data.get("targets", {})
+        new_targets = [
+            target for idx, target in targets.items() if idx not in known_target_indices
+        ]
+        if new_targets:
+            known_target_indices.update(t.index for t in new_targets)
+            async_add_entities(
+                TewkeTargetLight(coordinator=coordinator, target=target)
+                for target in new_targets
+            )
+
+    entry.async_on_unload(coordinator.async_add_listener(_async_check_new_targets))
+
+    @callback
     def _async_add_new_scenes(scenes: list[Scene]) -> None:
+        current_types = entry.runtime_data.scene_control_types
         async_add_entities(
             TewkeSceneLight(
                 coordinator=coordinator,
@@ -54,9 +73,13 @@ async def async_setup_entry(
                 not in entry.data.get(CONF_DISABLED_SCENES, []),
             )
             for scene in scenes
-            if scene_control_types.get(scene.id) == "light"
+            if current_types.get(scene.id) == "light"
         )
 
     entry.async_on_unload(
-        async_dispatcher_connect(hass, DISPATCHER_ADD_SCENES, _async_add_new_scenes)
+        async_dispatcher_connect(
+            hass,
+            f"{DISPATCHER_ADD_SCENES}_{entry.entry_id}",
+            _async_add_new_scenes,
+        )
     )

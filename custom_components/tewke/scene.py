@@ -30,7 +30,11 @@ from pytewke.error import (
 
 from .const import LOGGER
 from .entity import TewkeEntity
-from .util import _ha_to_tewke_brightness, _tewke_to_ha_brightness
+from .util import (
+    _get_default_scene_fan_dimming,
+    _ha_to_tewke_brightness,
+    _tewke_to_ha_brightness,
+)
 
 if TYPE_CHECKING:
     from pytewke.data import Scene
@@ -52,8 +56,7 @@ class TewkeSceneEntity(TewkeEntity):
         super().__init__(coordinator)
         self._scene_id = scene.id
         self._attr_name = scene.name
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_{scene.id}"
+        self._attr_unique_id = f"{self._hardware_id}_{scene.id}"
         self._is_on = scene.is_active
         self._brightness: int | None = scene.brightness
         self._attr_entity_registry_enabled_default = enabled_default
@@ -113,8 +116,13 @@ class TewkeSceneEntity(TewkeEntity):
             self._is_on = state
             if state and brightness is not None:
                 self._brightness = brightness
+            scene = self._scene
+            if scene is not None:
+                scene.update_state(
+                    is_active=state,
+                    brightness=brightness if state else None,
+                )
             self.async_write_ha_state()
-            await self.coordinator.async_request_refresh()
         except PyTewkeInvalidWallDockError:
             LOGGER.error("Attempted to set Scene while not connected to Wall Dock")
         except PyTewkeInvalidRequestError, RuntimeError:
@@ -213,6 +221,14 @@ class TewkeSceneFan(TewkeSceneEntity, FanEntity):
         """Initialise the scene fan."""
         super().__init__(coordinator, scene, enabled_default=enabled_default)
         self._default_dimming = default_dimming
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync fan default dimming and scene name from coordinator data."""
+        fan_defaults = _get_default_scene_fan_dimming(self.coordinator.config_entry)
+        if self._scene_id in fan_defaults:
+            self._default_dimming = fan_defaults[self._scene_id]
+        super()._handle_coordinator_update()
 
     async def _async_set_percentage(self, percentage: int | None) -> None:
         """Set fan speed. A percentage of 0 turns the fan off."""

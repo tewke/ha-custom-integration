@@ -2,6 +2,7 @@
 	"config": {
 		"abort": {
 			"already_configured": "Device is already configured.",
+			"cannot_connect": "Failed to connect",
 			"cannot_identify": "Unable to determine a unique ID for this device. Please check your device and network configuration.",
 			"no_devices_found": "No devices found on the network.",
 			"single_instance_allowed": "Already configured. Only a single configuration possible."

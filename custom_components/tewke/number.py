@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
 from homeassistant.const import UnitOfPower
+from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
+from pytewke.error import BasePyTewkeError
 
+from .const import LOGGER
 from .entity import TewkeEntity
 
 if TYPE_CHECKING:
@@ -29,9 +33,25 @@ async def async_setup_entry(
 ) -> None:
     """Set up Tewke number entities from a config entry."""
     coordinator = entry.runtime_data.coordinator
+    added_override = False
 
     if coordinator.data.get("energy_override") is not None:
+        added_override = True
         async_add_entities([TewkeEnergyOverrideNumber(coordinator=coordinator)])
+
+    @callback
+    def _async_check_late_energy_override() -> None:
+        nonlocal added_override
+        if not coordinator.data:
+            return
+        if not added_override and coordinator.data.get("energy_override") is not None:
+            added_override = True
+            async_add_entities([TewkeEnergyOverrideNumber(coordinator=coordinator)])
+
+    if not added_override:
+        entry.async_on_unload(
+            coordinator.async_add_listener(_async_check_late_energy_override)
+        )
 
 
 class TewkeEnergyOverrideNumber(TewkeEntity, NumberEntity):
@@ -53,8 +73,7 @@ class TewkeEnergyOverrideNumber(TewkeEntity, NumberEntity):
     def __init__(self, coordinator: TewkeCoordinator) -> None:
         """Initialise the energy override number entity."""
         super().__init__(coordinator)
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_energy_override"
+        self._attr_unique_id = f"{self._hardware_id}_energy_override"
 
     @property
     def native_value(self) -> float | None:
@@ -72,7 +91,12 @@ class TewkeEnergyOverrideNumber(TewkeEntity, NumberEntity):
         """
         tap = self.coordinator.config_entry.runtime_data.tap
         override_value: float | None = value if value > 0 else None
-        updated = await tap.set_energy_override(override_value)
+        try:
+            updated = await tap.set_energy_override(override_value)
+        except (BasePyTewkeError, TimeoutError) as err:
+            LOGGER.error("Error setting energy override on Tewke Tap: %s", err)
+            msg = f"Failed to set energy override: {err}"
+            raise HomeAssistantError(msg) from err
 
         current = self.coordinator.data
         self.coordinator.async_set_updated_data({**current, "energy_override": updated})

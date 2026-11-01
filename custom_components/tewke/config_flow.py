@@ -16,6 +16,7 @@ from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import selector
+from pytewke.error import BasePyTewkeError
 
 from .const import (
     CONF_DEFAULT_SCENE_FAN_DIMMING,
@@ -47,6 +48,23 @@ _FAN_SPEED_SELECTOR = selector.NumberSelector(
         mode=selector.NumberSelectorMode.SLIDER,
     )
 )
+
+
+def _build_unique_scene_labels(scenes: dict[str, Scene]) -> dict[str, str]:
+    """Return a mapping of unique form field label -> scene_id."""
+    name_counts: dict[str, int] = {}
+    for scene in scenes.values():
+        name_counts[scene.name] = name_counts.get(scene.name, 0) + 1
+
+    label_to_id: dict[str, str] = {}
+    for scene_id, scene in scenes.items():
+        label = (
+            f"{scene.name} ({scene_id[-4:]})"
+            if name_counts[scene.name] > 1
+            else scene.name
+        )
+        label_to_id[label] = scene_id
+    return label_to_id
 
 
 class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -127,6 +145,12 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
+    async def _async_close_tap(self) -> None:
+        """Close the temporary Tap client if one was created during the flow."""
+        if self._tap is not None:
+            await self._tap.close()
+            self._tap = None
+
     async def async_step_confirm_control_types(
         self, user_input: dict[str, str] | None = None
     ) -> ConfigFlowResult:
@@ -134,21 +158,30 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
         tap = self._tap if self._tap is not None else pytewke.Tap(self._discovered_host)
         self._tap = tap
 
-        if not tap.resources:
-            await tap.discover()
+        try:
+            if not tap.resources:
+                await tap.discover()
+            scenes = await tap.get_scenes()
+        except (BasePyTewkeError, TimeoutError) as err:
+            LOGGER.error(
+                "Error communicating with Tewke device at %s: %s",
+                self._discovered_host,
+                err,
+            )
+            await self._async_close_tap()
+            return self.async_abort(reason="cannot_connect")
 
-        scenes = await tap.get_scenes()
         self._scenes = scenes
         LOGGER.debug("Discovered scenes: %s", scenes)
+        label_to_id = _build_unique_scene_labels(scenes)
 
         if user_input is not None:
-            name_to_id = {scene.name: scene_id for scene_id, scene in scenes.items()}
             scene_configs = user_input.items()
             self._scene_control_types = {}
             self._disabled_scenes = []
 
             for name, config in scene_configs:
-                if name not in name_to_id:
+                if name not in label_to_id:
                     continue
 
                 if not isinstance(config, dict) or not all(
@@ -157,9 +190,10 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 ):
                     continue
 
-                self._scene_control_types[name_to_id[name]] = config["Control type"]
+                scene_id = label_to_id[name]
+                self._scene_control_types[scene_id] = config["Control type"]
                 if not config["Enabled"]:
-                    self._disabled_scenes.append(name_to_id[name])
+                    self._disabled_scenes.append(scene_id)
 
             if "fan" in self._scene_control_types.values() and [
                 sceneid
@@ -177,8 +211,8 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
         fields: dict = {}
         existing_types = getattr(self, "_scene_control_types", {})
         existing_disabled = getattr(self, "_disabled_scenes", [])
-        for scene_id, scene in scenes.items():
-            fields[vol.Required(scene.name)] = section(
+        for label, scene_id in label_to_id.items():
+            fields[vol.Required(label)] = section(
                 vol.Schema(
                     {
                         vol.Optional(
@@ -212,15 +246,13 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             and scene_id in self._scenes
             and scene_id not in self._disabled_scenes
         }
+        label_to_id = _build_unique_scene_labels(fan_scenes)
 
         if user_input is not None:
-            name_to_id = {
-                scene.name: scene_id for scene_id, scene in fan_scenes.items()
-            }
             self._default_scene_fan_dimming = {
-                name_to_id[name]: int(value)
+                label_to_id[name]: int(value)
                 for name, value in user_input.items()
-                if name in name_to_id
+                if name in label_to_id
             }
             return await self.async_step_confirmation()
 
@@ -231,12 +263,12 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        scene.name,
+                        label,
                         default=existing_dimming.get(
                             scene_id, DEFAULT_SCENE_FAN_DIMMING
                         ),
                     ): _FAN_SPEED_SELECTOR
-                    for scene_id, scene in fan_scenes.items()
+                    for label, scene_id in label_to_id.items()
                 }
             ),
         )
@@ -246,6 +278,7 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Show confirmation before creating the config entry."""
         if user_input is not None:
+            await self._async_close_tap()
             data = {
                 CONF_HOST: self._discovered_host,
                 CONF_NAME: self._discovered_name,
@@ -308,15 +341,13 @@ class TewkeOptionsFlow(OptionsFlow):
             return self.async_abort(reason="no_fan_scenes")
 
         current_speeds = _get_default_scene_fan_dimming(entry)
+        label_to_id = _build_unique_scene_labels(fan_scenes)
 
         if user_input is not None:
-            name_to_id = {
-                scene.name: scene_id for scene_id, scene in fan_scenes.items()
-            }
             default_scene_fan_dimming = {
-                name_to_id[name]: int(value)
+                label_to_id[name]: int(value)
                 for name, value in user_input.items()
-                if name in name_to_id
+                if name in label_to_id
             }
             return self.async_create_entry(
                 data={CONF_DEFAULT_SCENE_FAN_DIMMING: default_scene_fan_dimming}
@@ -327,10 +358,10 @@ class TewkeOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        scene.name,
+                        label,
                         default=current_speeds.get(scene_id, DEFAULT_SCENE_FAN_DIMMING),
                     ): _FAN_SPEED_SELECTOR
-                    for scene_id, scene in fan_scenes.items()
+                    for label, scene_id in label_to_id.items()
                 }
             ),
         )

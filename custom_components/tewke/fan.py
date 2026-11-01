@@ -48,6 +48,7 @@ async def async_setup_entry(
 
     @callback
     def _async_add_new_scenes(scenes: list[Scene]) -> None:
+        current_types = entry.runtime_data.scene_control_types
         current_dimming = _get_default_scene_fan_dimming(entry)
         async_add_entities(
             TewkeSceneFan(
@@ -60,9 +61,13 @@ async def async_setup_entry(
                 not in entry.data.get(CONF_DISABLED_SCENES, []),
             )
             for scene in scenes
-            if scene_control_types.get(scene.id) == "fan"
+            if current_types.get(scene.id) == "fan"
         )
 
     entry.async_on_unload(
-        async_dispatcher_connect(hass, DISPATCHER_ADD_SCENES, _async_add_new_scenes)
+        async_dispatcher_connect(
+            hass,
+            f"{DISPATCHER_ADD_SCENES}_{entry.entry_id}",
+            _async_add_new_scenes,
+        )
     )

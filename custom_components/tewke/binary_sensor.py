@@ -15,6 +15,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
+from homeassistant.core import callback
 
 from .entity import TewkeEntity
 
@@ -59,18 +60,36 @@ async def async_setup_entry(
 ) -> None:
     """Set up Tewke binary sensor entities from a config entry."""
     coordinator = entry.runtime_data.coordinator
-    entities: list[TewkeBinarySensor | TewkeScreenBinarySensor] = []
+    entities: list[TewkeBinarySensor | TewkeScreenBinarySensor] = [
+        TewkeScreenBinarySensor(coordinator=coordinator)
+    ]
+    added_bme_binary = False
 
     if coordinator.data.get("sensors") is not None:
+        added_bme_binary = True
         entities.extend(
             TewkeBinarySensor(coordinator=coordinator, description=description)
             for description in BINARY_SENSOR_DESCRIPTIONS
         )
 
-    if coordinator.data.get("config") is not None:
-        entities.append(TewkeScreenBinarySensor(coordinator=coordinator))
-
     async_add_entities(entities)
+
+    @callback
+    def _async_check_late_binary_sensors() -> None:
+        nonlocal added_bme_binary
+        if not coordinator.data:
+            return
+        if not added_bme_binary and coordinator.data.get("sensors") is not None:
+            added_bme_binary = True
+            async_add_entities(
+                TewkeBinarySensor(coordinator=coordinator, description=description)
+                for description in BINARY_SENSOR_DESCRIPTIONS
+            )
+
+    if not added_bme_binary:
+        entry.async_on_unload(
+            coordinator.async_add_listener(_async_check_late_binary_sensors)
+        )
 
 
 class TewkeBinarySensor(TewkeEntity, BinarySensorEntity):
@@ -86,8 +105,7 @@ class TewkeBinarySensor(TewkeEntity, BinarySensorEntity):
         """Initialise the binary sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_sensor_{description.key}"
+        self._attr_unique_id = f"{self._hardware_id}_sensor_{description.key}"
 
     @property
     def is_on(self) -> bool | None:
@@ -107,8 +125,7 @@ class TewkeScreenBinarySensor(TewkeEntity, BinarySensorEntity):
     def __init__(self, coordinator: TewkeCoordinator) -> None:
         """Initialise the screen sensor."""
         super().__init__(coordinator)
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_screen_on"
+        self._attr_unique_id = f"{self._hardware_id}_screen_on"
 
     @property
     def is_on(self) -> bool | None:

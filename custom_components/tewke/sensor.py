@@ -26,6 +26,7 @@ from homeassistant.const import (
     UnitOfPressure,
     UnitOfTemperature,
 )
+from homeassistant.core import callback
 
 from .entity import TewkeEntity
 
@@ -163,26 +164,63 @@ async def async_setup_entry(
     """Set up Tewke sensor entities from a config entry."""
     coordinator = entry.runtime_data.coordinator
     entities: list[TewkeSensor | TewkeRadarSensor | TewkeEnergySensor] = []
+    added_sensors = False
+    added_radar = False
+    added_energy = False
 
     if coordinator.data.get("sensors") is not None:
+        added_sensors = True
         entities.extend(
             TewkeSensor(coordinator=coordinator, description=description)
             for description in SENSOR_DESCRIPTIONS
         )
 
     if coordinator.data.get("radar") is not None:
+        added_radar = True
         entities.extend(
             TewkeRadarSensor(coordinator=coordinator, description=description)
             for description in RADAR_SENSOR_DESCRIPTIONS
         )
 
     if coordinator.data.get("energy") is not None:
+        added_energy = True
         entities.extend(
             TewkeEnergySensor(coordinator=coordinator, description=description)
             for description in ENERGY_SENSOR_DESCRIPTIONS
         )
 
-    async_add_entities(entities)
+    if entities:
+        async_add_entities(entities)
+
+    @callback
+    def _async_check_late_sensors() -> None:
+        nonlocal added_sensors, added_radar, added_energy
+        if not coordinator.data:
+            return
+        new_entities: list[TewkeSensor | TewkeRadarSensor | TewkeEnergySensor] = []
+        if not added_sensors and coordinator.data.get("sensors") is not None:
+            added_sensors = True
+            new_entities.extend(
+                TewkeSensor(coordinator=coordinator, description=description)
+                for description in SENSOR_DESCRIPTIONS
+            )
+        if not added_radar and coordinator.data.get("radar") is not None:
+            added_radar = True
+            new_entities.extend(
+                TewkeRadarSensor(coordinator=coordinator, description=description)
+                for description in RADAR_SENSOR_DESCRIPTIONS
+            )
+        if not added_energy and coordinator.data.get("energy") is not None:
+            added_energy = True
+            new_entities.extend(
+                TewkeEnergySensor(coordinator=coordinator, description=description)
+                for description in ENERGY_SENSOR_DESCRIPTIONS
+            )
+        if new_entities:
+            async_add_entities(new_entities)
+
+    if not (added_sensors and added_radar and added_energy):
+        entry.async_on_unload(coordinator.async_add_listener(_async_check_late_sensors))
 
 
 class TewkeSensor(TewkeEntity, SensorEntity):
@@ -198,8 +236,7 @@ class TewkeSensor(TewkeEntity, SensorEntity):
         """Initialise the sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_sensor_{description.key}"
+        self._attr_unique_id = f"{self._hardware_id}_sensor_{description.key}"
 
     @property
     def native_value(self) -> float | int | None:
@@ -269,8 +306,7 @@ class TewkeRadarSensor(TewkeEntity, SensorEntity):
         """Initialise the radar sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_{description.key}"
+        self._attr_unique_id = f"{self._hardware_id}_{description.key}"
 
     @property
     def native_value(self) -> str | int | None:
@@ -324,8 +360,7 @@ class TewkeEnergySensor(TewkeEntity, SensorEntity):
         """Initialise the energy sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_{description.key}"
+        self._attr_unique_id = f"{self._hardware_id}_{description.key}"
 
     @property
     def native_value(self) -> float | None:

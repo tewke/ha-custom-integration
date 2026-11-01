@@ -156,6 +156,13 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             self._observe_retry_task.cancel()
             self._observe_retry_task = None
 
+    @property
+    def is_retrying_observe(self) -> bool:
+        """Return True if an observation retry task is currently running."""
+        return (
+            self._observe_retry_task is not None and not self._observe_retry_task.done()
+        )
+
     @callback
     def _handle_observation_timeout(self, _now: datetime) -> None:
         """Fire on the event loop when no observations have arrived for a while."""
@@ -165,7 +172,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         )
         self._observation_timeout_unsub = None
         self.config_entry.runtime_data.observe_active = False
-        if self._observe_retry_task is not None and not self._observe_retry_task.done():
+        if self.is_retrying_observe:
             return
 
         _observe_delays: list[int] = [30, 60, 90]
@@ -173,13 +180,19 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
         async def _do_retry_attempt(attempt_num: int) -> bool:
             if attempt_num != 0:
-                return await self._setup_observe()
+                if not await self._setup_observe():
+                    return False
+            else:
+                async with self._observe_setup_lock:
+                    if self.config_entry.runtime_data.observe_active:
+                        return True
+                    if not await self.config_entry.runtime_data.tap.retry_observes():
+                        return False
+                    self.config_entry.runtime_data.observe_active = True
+                    self.reset_observation_timeout()
 
-            if not await self.config_entry.runtime_data.tap.retry_observes():
-                return False
-
-            self.config_entry.runtime_data.observe_active = True
-            self.reset_observation_timeout()
+            if not self.last_update_success and self.data is not None:
+                self.async_set_updated_data(self.data)
             return True
 
         async def _retry() -> None:
@@ -219,7 +232,10 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
     async def _setup_observe(self) -> bool:
         async with self._observe_setup_lock:
             if self.config_entry.runtime_data.observe_active:
-                return True
+                tap = self.config_entry.runtime_data.tap
+                if await tap.ensure_active_observations():
+                    return True
+                self.config_entry.runtime_data.observe_active = False
             LOGGER.info(
                 "CoAP observations not active for %s; attempting to re-establish",
                 self.config_entry.entry_id,
@@ -230,27 +246,33 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
         """
         Fetch current state for all resources, retrying on transient errors.
 
-        If CoAP observations are active and we already have data, skip the
-        manual fetch entirely — observations will keep the data current.
-        The full fetch only runs when we have no data yet (initial startup)
-        or when observations are down and we need to fall back to polling.
+        If CoAP observations are active (verified via `ensure_active_observations`),
+        we already have data, and the last update succeeded, skip the manual
+        fetch — observations keep the data current. The full fetch runs on
+        initial startup, when observations are down, or when recovering from
+        an update failure.
         """
         try:
             await self._setup_observe()
         except Exception as err:
             raise UpdateFailed from err
 
-        if self.config_entry.runtime_data.observe_active and self.data is not None:
+        if (
+            self.config_entry.runtime_data.observe_active
+            and self.data is not None
+            and self.last_update_success
+        ):
             return self.data
 
         tap = self.config_entry.runtime_data.tap
         expected_dock_id = self.config_entry.unique_id
 
         if tap.wall_dock_id != expected_dock_id:
-            raise UpdateFailed(
+            msg = (
                 f"Device swap detected! Coordinator expected {expected_dock_id} "
                 f"but IP is reporting {tap.wall_dock_id}. Waiting for Zeroconf update."
             )
+            raise UpdateFailed(msg)
 
         try:
             scenes_all = await _fetch_with_retries(tap.get_scenes)
@@ -261,6 +283,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             PyTewkeUnknownError,
             TimeoutError,
         ) as err:
+            self.config_entry.runtime_data.observe_active = False
             msg = f"Error communicating with Tewke Tap: {err}"
             raise UpdateFailed(msg) from err
 
@@ -271,6 +294,8 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             if scene_id in scene_control_types
         }
 
+        prev = self.data or {}
+
         try:
             sensors: SensorData | None = await tap.get_sensors()
         except (
@@ -280,7 +305,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             TimeoutError,
         ) as err:
             LOGGER.debug("Sensor data not available from Tewke Tap: %s", err)
-            sensors = None
+            sensors = prev.get("sensors")
 
         try:
             radar: RadarData | None = await tap.get_radar()
@@ -291,7 +316,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             TimeoutError,
         ) as err:
             LOGGER.debug("Radar data not available from Tewke Tap: %s", err)
-            radar = None
+            radar = prev.get("radar")
 
         try:
             energy: EnergyData | None = await tap.get_energy()
@@ -302,7 +327,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             TimeoutError,
         ) as err:
             LOGGER.debug("Energy data not available from Tewke Tap: %s", err)
-            energy = None
+            energy = prev.get("energy")
 
         try:
             energy_override: EnergyOverrideData | None = await tap.get_energy_override()
@@ -313,7 +338,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             TimeoutError,
         ) as err:
             LOGGER.debug("Energy override data not available from Tewke Tap: %s", err)
-            energy_override = None
+            energy_override = prev.get("energy_override")
 
         try:
             config: ConfigData | None = await tap.get_config()
@@ -324,7 +349,7 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             TimeoutError,
         ) as err:
             LOGGER.debug("Config data not available from Tewke Tap: %s", err)
-            config = None
+            config = prev.get("config")
 
         return TewkeCoordinatorData(
             scenes=configured_scenes,

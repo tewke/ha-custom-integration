@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_NAME
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytewke.error import PyTewkeObserveError
 
@@ -58,6 +59,50 @@ def _ha_to_tewke_brightness(value: int) -> int:
     return round(value / 255 * 100)
 
 
+def _remove_deleted_scenes(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    removed_configured_ids: list[str],
+) -> dict[str, str]:
+    """Remove deleted scenes from entity registry and config entry."""
+    LOGGER.info(
+        "Removing deleted scenes from configuration: %s",
+        removed_configured_ids,
+    )
+    tap = entry.runtime_data.tap
+    new_scene_control_types = dict(entry.runtime_data.scene_control_types)
+    ent_reg = er.async_get(hass)
+    hardware_id = tap.wall_dock_id or entry.unique_id
+
+    for sid in removed_configured_ids:
+        platform_domain = new_scene_control_types.pop(sid, None)
+        if platform_domain and hardware_id:
+            ent_id = ent_reg.async_get_entity_id(
+                platform_domain, DOMAIN, f"{hardware_id}_{sid}"
+            )
+            if ent_id is not None:
+                ent_reg.async_remove(ent_id)
+
+    new_data = dict(entry.data)
+    new_data["scene_control_types"] = new_scene_control_types
+
+    if CONF_DISABLED_SCENES in new_data:
+        new_data[CONF_DISABLED_SCENES] = [
+            sid
+            for sid in new_data[CONF_DISABLED_SCENES]
+            if sid not in removed_configured_ids
+        ]
+    if CONF_DEFAULT_SCENE_FAN_DIMMING in new_data:
+        new_fan_dimming = dict(new_data[CONF_DEFAULT_SCENE_FAN_DIMMING])
+        for sid in removed_configured_ids:
+            new_fan_dimming.pop(sid, None)
+        new_data[CONF_DEFAULT_SCENE_FAN_DIMMING] = new_fan_dimming
+
+    entry.runtime_data.scene_control_types = new_scene_control_types
+    hass.config_entries.async_update_entry(entry, data=new_data)
+    return new_scene_control_types
+
+
 async def async_setup_observe(  # noqa: PLR0915
     coordinator: TewkeCoordinator,
     hass: HomeAssistant,
@@ -72,7 +117,7 @@ async def async_setup_observe(  # noqa: PLR0915
     tap = entry.runtime_data.tap
 
     tap.clear_callbacks()
-    await tap._observation_manager.close()  # noqa: SLF001
+    await tap.close_observations()
 
     def _on_scene_update(scenes: dict[str, Scene]) -> None:
         """
@@ -92,32 +137,9 @@ async def async_setup_observe(  # noqa: PLR0915
             sid for sid in scene_control_types if sid not in scenes
         ]
         if removed_configured_ids:
-            LOGGER.info(
-                "Marking deleted scenes as unavailable: %s", removed_configured_ids
+            scene_control_types = _remove_deleted_scenes(
+                hass, entry, removed_configured_ids
             )
-            new_scene_control_types = dict(scene_control_types)
-
-            for sid in removed_configured_ids:
-                del new_scene_control_types[sid]
-
-            new_data = dict(entry.data)
-            new_data["scene_control_types"] = new_scene_control_types
-
-            if CONF_DISABLED_SCENES in new_data:
-                new_data[CONF_DISABLED_SCENES] = [
-                    sid
-                    for sid in new_data[CONF_DISABLED_SCENES]
-                    if sid not in removed_configured_ids
-                ]
-            if CONF_DEFAULT_SCENE_FAN_DIMMING in new_data:
-                new_fan_dimming = dict(new_data[CONF_DEFAULT_SCENE_FAN_DIMMING])
-                for sid in removed_configured_ids:
-                    new_fan_dimming.pop(sid, None)
-                new_data[CONF_DEFAULT_SCENE_FAN_DIMMING] = new_fan_dimming
-
-            entry.runtime_data.scene_control_types = new_scene_control_types
-            hass.config_entries.async_update_entry(entry, data=new_data)
-            return
 
         configured_scenes = {
             scene_id: scene
@@ -266,7 +288,8 @@ async def async_setup_observe(  # noqa: PLR0915
             exc_info=True,
         )
         entry.runtime_data.observe_active = False
-        coordinator.reset_observation_timeout()
+        if not coordinator.is_retrying_observe:
+            coordinator.reset_observation_timeout()
         return False
 
     entry.runtime_data.observe_active = True

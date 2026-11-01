@@ -10,7 +10,10 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
 from homeassistant.const import EntityCategory
+from homeassistant.exceptions import HomeAssistantError
+from pytewke.error import BasePyTewkeError
 
+from .const import LOGGER
 from .entity import TewkeEntity
 
 if TYPE_CHECKING:
@@ -42,10 +45,16 @@ class TewkeRestartButton(TewkeEntity, ButtonEntity):
     def __init__(self, coordinator: TewkeCoordinator) -> None:
         """Initialise the restart button entity."""
         super().__init__(coordinator)
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_restart"
+        self._attr_unique_id = f"{self._hardware_id}_restart"
 
     async def async_press(self) -> None:
         """Send a restart command to the Tap Panel."""
         tap = self.coordinator.config_entry.runtime_data.tap
-        await tap.restart()
+        try:
+            await tap.restart()
+        except TimeoutError:
+            LOGGER.debug("Timed out waiting for restart ACK (device may be rebooting)")
+        except BasePyTewkeError as err:
+            LOGGER.error("Error restarting Tewke Tap: %s", err)
+            msg = f"Failed to restart Tewke Tap: {err}"
+            raise HomeAssistantError(msg) from err

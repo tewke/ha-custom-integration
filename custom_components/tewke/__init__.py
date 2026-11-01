@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytewke
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.exceptions import ConfigEntryNotReady
-from pytewke.error import PyTewkeDiscoveryError
+from pytewke.error import BasePyTewkeError
 
 from .const import DOMAIN, LOGGER
 from .coordinator import TewkeCoordinator
@@ -38,7 +38,8 @@ async def async_setup_entry(
 
     try:
         await tap.discover()
-    except PyTewkeDiscoveryError as err:
+    except (BasePyTewkeError, TimeoutError) as err:
+        await tap.close()
         msg = f"Unable to connect to Tewke device at {entry.data[CONF_HOST]}"
         raise ConfigEntryNotReady(msg) from err
 
@@ -57,7 +58,12 @@ async def async_setup_entry(
         scene_control_types=entry.data.get("scene_control_types", {}),
     )
 
-    await tewke_coordinator.async_config_entry_first_refresh()
+    try:
+        await tewke_coordinator.async_config_entry_first_refresh()
+    except Exception:
+        tewke_coordinator.cancel_observation_timeout()
+        await tap.close()
+        raise
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
@@ -76,8 +82,9 @@ async def async_unload_entry(
 
 
 async def async_reload_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: TewkeConfigEntry,
 ) -> None:
-    """Reload config entry."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Handle config entry options/data update."""
+    if hasattr(entry, "runtime_data") and entry.runtime_data is not None:
+        entry.runtime_data.coordinator.async_update_listeners()

@@ -48,9 +48,8 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
         """Initialise the target light."""
         super().__init__(coordinator)
         self._target_index = target.index
-        self._attr_name = target.name
-        hardware_id = coordinator.data["config"].hardware_id
-        self._attr_unique_id = f"{hardware_id}_target_{target.index}"
+        self._attr_name = target.name or f"Target {target.index + 1}"
+        self._attr_unique_id = f"{self._hardware_id}_target_{target.index}"
         if target.is_dimmable:
             self._attr_color_mode = ColorMode.BRIGHTNESS
             self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
@@ -67,7 +66,7 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
         """Sync target name from coordinator data before writing state."""
         target = self._target
         if target is not None:
-            self._attr_name = target.name
+            self._attr_name = target.name or f"Target {target.index + 1}"
         super()._handle_coordinator_update()
 
     @property

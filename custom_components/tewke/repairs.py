@@ -241,7 +241,11 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
         )
 
         if added_scenes:
-            async_dispatcher_send(self.hass, DISPATCHER_ADD_SCENES, added_scenes)
+            async_dispatcher_send(
+                self.hass,
+                f"{DISPATCHER_ADD_SCENES}_{self.entry.entry_id}",
+                added_scenes,
+            )
 
         if not pending:
             ir.async_delete_issue(

@@ -87,6 +87,43 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
         """Return the Options flow handler."""
         return TewkeOptionsFlow()
 
+    async def async_step_user(
+        self,
+        user_input: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        """Handle a flow initialized by the user (manual IP/hostname entry)."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            host = user_input[CONF_HOST].strip()
+            tap = pytewke.Tap(host)
+            try:
+                await tap.discover()
+                config = await tap.get_config()
+            except (BasePyTewkeError, TimeoutError) as err:
+                LOGGER.debug("Failed to connect to Tewke device at %s: %s", host, err)
+                await tap.close()
+                errors["base"] = "cannot_connect"
+            else:
+                unique_id = config.hardware_id or tap.wall_dock_id
+                if not unique_id:
+                    await tap.close()
+                    return self.async_abort(reason="cannot_identify")
+
+                await self.async_set_unique_id(unique_id, raise_on_progress=False)
+                self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+
+                self._tap = tap
+                self._discovered_host = host
+                self._discovered_name = config.device_name or f"Tewke ({host})"
+                self._room_name = config.room_name
+                return await self.async_step_confirm_control_types()
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({vol.Required(CONF_HOST): str}),
+            errors=errors,
+        )
+
     async def async_step_reconfigure(
         self,
         _user_input: dict[str, str] | None = None,

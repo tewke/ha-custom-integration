@@ -1,5 +1,8 @@
 {
 	"config": {
+		"error": {
+			"cannot_connect": "Failed to connect"
+		},
 		"abort": {
 			"already_configured": "Device is already configured.",
 			"cannot_connect": "Failed to connect",
@@ -8,6 +11,13 @@
 			"single_instance_allowed": "Already configured. Only a single configuration possible."
 		},
 		"step": {
+			"user": {
+				"title": "Connect to Tewke Tap",
+				"description": "Enter the IP address or hostname of your Tewke Tap Panel.",
+				"data": {
+					"host": "Host"
+				}
+			},
 			"zeroconf_confirm": {
 				"description": "You are setting up the Tewke device **{name}**{room_suffix}. Click Submit to continue.",
 				"title": "Tewke device found"

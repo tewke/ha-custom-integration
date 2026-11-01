@@ -103,6 +103,48 @@ def _remove_deleted_scenes(
     return new_scene_control_types
 
 
+def _push_if_changed(
+    coordinator: TewkeCoordinator,
+    key: str,
+    value: object,
+) -> bool:
+    """Reset the observation timeout and push data if it changed."""
+    coordinator.reset_observation_timeout()
+    if coordinator.data is None:
+        return False
+    if coordinator.data.get(key) != value:
+        coordinator.async_set_updated_data({**coordinator.data, key: value})
+    return True
+
+
+def _sync_device_metadata(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    config_data: ConfigData,
+) -> None:
+    """Sync device name and software version to the HA registries."""
+    tap = entry.runtime_data.tap
+    device_registry = dr.async_get(hass)
+    device_id = tap.wall_dock_id
+    device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
+
+    if device:
+        new_name = config_data.device_name
+        if new_name and new_name != entry.data.get(CONF_NAME):
+            LOGGER.debug("Device renamed to %r, updating HA", new_name)
+            hass.config_entries.async_update_entry(
+                entry,
+                title=new_name,
+                data={**entry.data, CONF_NAME: new_name},
+            )
+            device_registry.async_update_device(device.id, name=new_name)
+
+        new_version = config_data.tewke_os_version
+        if new_version and new_version != device.sw_version:
+            LOGGER.debug("Device updated to %r, updating HA", new_version)
+            device_registry.async_update_device(device.id, sw_version=new_version)
+
+
 async def async_setup_observe(  # noqa: PLR0915
     coordinator: TewkeCoordinator,
     hass: HomeAssistant,
@@ -206,67 +248,21 @@ async def async_setup_observe(  # noqa: PLR0915
         )
 
     def _on_sensor_update(sensor_data: SensorData) -> None:
-        """
-        Handle sensor updates from the Tewke device.
-
-        This callback is triggered when the sensors on the device change.
-        """
-        coordinator.reset_observation_timeout()
-        if coordinator.data is None:
-            return
-        coordinator.async_set_updated_data({**coordinator.data, "sensors": sensor_data})
+        """Handle sensor updates from the Tewke device."""
+        _push_if_changed(coordinator, "sensors", sensor_data)
 
     def _on_radar_update(radar_data: RadarData) -> None:
-        """
-        Handle radar updates from the Tewke device.
-
-        This callback is triggered when the radar on the device changes.
-        """
-        coordinator.reset_observation_timeout()
-        if coordinator.data is None:
-            return
-        coordinator.async_set_updated_data({**coordinator.data, "radar": radar_data})
+        """Handle radar updates from the Tewke device."""
+        _push_if_changed(coordinator, "radar", radar_data)
 
     def _on_energy_update(energy_data: EnergyData) -> None:
-        """
-        Handle energy updates from the Tewke device.
-
-        This callback is triggered when the energy on the device changes.
-        """
-        coordinator.reset_observation_timeout()
-        if coordinator.data is None:
-            return
-        coordinator.async_set_updated_data({**coordinator.data, "energy": energy_data})
+        """Handle energy updates from the Tewke device."""
+        _push_if_changed(coordinator, "energy", energy_data)
 
     def _on_config_update(config_data: ConfigData) -> None:
-        """
-        Handle config updates from the Tewke device.
-
-        This callback is triggered when the config on the device changes.
-        """
-        coordinator.reset_observation_timeout()
-        if coordinator.data is None:
-            return
-        coordinator.async_set_updated_data({**coordinator.data, "config": config_data})
-        device_registry = dr.async_get(hass)
-        device_id = tap.wall_dock_id
-        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
-
-        if device:
-            new_name = config_data.device_name
-            if new_name and new_name != entry.data.get(CONF_NAME):
-                LOGGER.debug("Device renamed to %r, updating HA", new_name)
-                hass.config_entries.async_update_entry(
-                    entry,
-                    title=new_name,
-                    data={**entry.data, CONF_NAME: new_name},
-                )
-                device_registry.async_update_device(device.id, name=new_name)
-
-            new_version = config_data.tewke_os_version
-            if new_version and new_version != device.sw_version:
-                LOGGER.debug("Device updated to %r, updating HA", new_version)
-                device_registry.async_update_device(device.id, sw_version=new_version)
+        """Handle config updates from the Tewke device."""
+        if _push_if_changed(coordinator, "config", config_data):
+            _sync_device_metadata(hass, entry, config_data)
 
     try:
         LOGGER.debug(

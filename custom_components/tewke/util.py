@@ -16,12 +16,18 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .heating import (
+    async_handle_heating_command,
+    async_push_heating_state,
+    tap_supports_heating,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from pytewke.data import (
         ConfigData,
         EnergyData,
+        HeatingData,
         RadarData,
         Scene,
         SensorData,
@@ -264,19 +270,30 @@ async def async_setup_observe(  # noqa: PLR0915
         if _push_if_changed(coordinator, "config", config_data):
             _sync_device_metadata(hass, entry, config_data)
 
+    def _on_heating_update(heating_data: HeatingData) -> None:
+        """Handle heating updates and commands from the Tewke device."""
+        _push_if_changed(coordinator, "heating", heating_data)
+        if heating_data.command is not None:
+            hass.async_create_task(
+                async_handle_heating_command(hass, entry, heating_data.command)
+            )
+
     try:
         LOGGER.debug(
             "Setting up CoAP observations for %s",
             entry.data.get(CONF_NAME, entry.entry_id),
         )
-        await tap.observe(
-            scene_callback=_on_scene_update,
-            target_callback=_on_target_update,
-            sensor_callback=_on_sensor_update,
-            radar_callback=_on_radar_update,
-            energy_callback=_on_energy_update,
-            config_change_callback=_on_config_update,
-        )
+        observe_kwargs: dict[str, object] = {
+            "scene_callback": _on_scene_update,
+            "target_callback": _on_target_update,
+            "sensor_callback": _on_sensor_update,
+            "radar_callback": _on_radar_update,
+            "energy_callback": _on_energy_update,
+            "config_change_callback": _on_config_update,
+        }
+        if tap_supports_heating(tap):
+            observe_kwargs["heating_callback"] = _on_heating_update
+        await tap.observe(**observe_kwargs)
     except PyTewkeObserveError:
         LOGGER.warning(
             "Failed to set up CoAP observations for %s; will retry on next poll",
@@ -294,5 +311,8 @@ async def async_setup_observe(  # noqa: PLR0915
     # Process scenes already fetched during initial discovery
     if coordinator.data and "scenes_all" in coordinator.data:
         _on_scene_update(coordinator.data["scenes_all"])
+
+    if tap_supports_heating(tap):
+        hass.async_create_task(async_push_heating_state(hass, entry))
 
     return True

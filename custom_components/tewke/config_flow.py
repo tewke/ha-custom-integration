@@ -19,15 +19,24 @@ from homeassistant.helpers import selector
 from pytewke.error import BasePyTewkeError
 
 from .const import (
+    CONF_CLIMATE_ENTITIES,
     CONF_DEFAULT_SCENE_FAN_DIMMING,
     CONF_DISABLED_SCENES,
+    CONF_PRIMARY_CLIMATE_ENTITY,
     DEFAULT_SCENE_FAN_DIMMING,
     DOMAIN,
     LOGGER,
 )
+from .heating import (
+    get_configured_climate_entities,
+    get_configured_primary_climate_entity,
+    tap_supports_heating,
+)
 from .util import _get_default_scene_fan_dimming
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
     from pytewke.data import Scene
@@ -46,6 +55,20 @@ _FAN_SPEED_SELECTOR = selector.NumberSelector(
         max=100,
         step=1,
         mode=selector.NumberSelectorMode.SLIDER,
+    )
+)
+
+_CLIMATE_ENTITIES_SELECTOR = selector.EntitySelector(
+    selector.EntitySelectorConfig(
+        domain="climate",
+        multiple=True,
+    )
+)
+
+_PRIMARY_CLIMATE_ENTITY_SELECTOR = selector.EntitySelector(
+    selector.EntitySelectorConfig(
+        domain="climate",
+        multiple=False,
     )
 )
 
@@ -78,6 +101,8 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
     _scene_control_types: dict[str, str]
     _default_scene_fan_dimming: dict[str, int]
     _disabled_scenes: list[str]
+    _climate_entities: list[str]
+    _primary_climate_entity: str | None = None
     _scenes: dict[str, Scene]
     _tap: pytewke.Tap | None = None
 
@@ -136,6 +161,8 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
         self._scene_control_types = entry.data.get("scene_control_types", {})
         self._disabled_scenes = list(entry.data.get(CONF_DISABLED_SCENES, []))
         self._default_scene_fan_dimming = _get_default_scene_fan_dimming(entry)
+        self._climate_entities = get_configured_climate_entities(entry)
+        self._primary_climate_entity = get_configured_primary_climate_entity(entry)
         return await self.async_step_confirm_control_types()
 
     async def async_step_zeroconf(
@@ -240,10 +267,10 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 return await self.async_step_fan_default_speeds()
 
             self._default_scene_fan_dimming = {}
-            return await self.async_step_confirmation()
+            return await self._async_next_after_scenes()
 
         if not scenes:
-            return await self.async_step_confirmation()
+            return await self._async_next_after_scenes()
 
         fields: dict = {}
         existing_types = getattr(self, "_scene_control_types", {})
@@ -291,7 +318,7 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 for name, value in user_input.items()
                 if name in label_to_id
             }
-            return await self.async_step_confirmation()
+            return await self._async_next_after_scenes()
 
         existing_dimming = getattr(self, "_default_scene_fan_dimming", {})
 
@@ -310,6 +337,51 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         )
 
+    async def _async_next_after_scenes(self) -> ConfigFlowResult:
+        """Proceed to heating setup if supported by the Tap, else confirmation."""
+        if self._tap is not None and tap_supports_heating(self._tap):
+            return await self.async_step_heating()
+        return await self.async_step_confirmation()
+
+    async def async_step_heating(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select HA climate entities to display on the Tap Heating Screen."""
+        if user_input is not None:
+            raw_entities = user_input.get(CONF_CLIMATE_ENTITIES) or []
+            self._climate_entities = (
+                [str(e) for e in raw_entities if isinstance(e, str)]
+                if isinstance(raw_entities, list)
+                else []
+            )
+            raw_primary = user_input.get(CONF_PRIMARY_CLIMATE_ENTITY)
+            self._primary_climate_entity = (
+                raw_primary if isinstance(raw_primary, str) and raw_primary else None
+            )
+            return await self.async_step_confirmation()
+
+        existing_entities: list[str] = getattr(self, "_climate_entities", [])
+        existing_primary: str | None = getattr(self, "_primary_climate_entity", None)
+
+        schema_fields: dict[Any, Any] = {
+            vol.Optional(
+                CONF_CLIMATE_ENTITIES, default=existing_entities
+            ): _CLIMATE_ENTITIES_SELECTOR,
+        }
+        if existing_primary:
+            schema_fields[
+                vol.Optional(CONF_PRIMARY_CLIMATE_ENTITY, default=existing_primary)
+            ] = _PRIMARY_CLIMATE_ENTITY_SELECTOR
+        else:
+            schema_fields[vol.Optional(CONF_PRIMARY_CLIMATE_ENTITY)] = (
+                _PRIMARY_CLIMATE_ENTITY_SELECTOR
+            )
+
+        return self.async_show_form(
+            step_id="heating",
+            data_schema=vol.Schema(schema_fields),
+        )
+
     async def async_step_confirmation(
         self, user_input: dict[str, str] | None = None
     ) -> ConfigFlowResult:
@@ -320,17 +392,24 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_HOST: self._discovered_host,
                 CONF_NAME: self._discovered_name,
                 "room_name": self._room_name,
-                "scene_control_types": self._scene_control_types or {},
+                "scene_control_types": getattr(self, "_scene_control_types", None)
+                or {},
                 CONF_DEFAULT_SCENE_FAN_DIMMING: getattr(
                     self, "_default_scene_fan_dimming", {}
                 ),
                 CONF_DISABLED_SCENES: getattr(self, "_disabled_scenes", []),
+                CONF_CLIMATE_ENTITIES: getattr(self, "_climate_entities", []),
+                CONF_PRIMARY_CLIMATE_ENTITY: getattr(
+                    self, "_primary_climate_entity", None
+                ),
             }
 
             if self.source == SOURCE_RECONFIGURE:
                 entry = self._get_reconfigure_entry()
                 options = dict(entry.options)
                 options.pop(CONF_DEFAULT_SCENE_FAN_DIMMING, None)
+                options.pop(CONF_CLIMATE_ENTITIES, None)
+                options.pop(CONF_PRIMARY_CLIMATE_ENTITY, None)
 
                 return self.async_update_reload_and_abort(
                     entry,
@@ -353,16 +432,20 @@ class TewkeOptionsFlow(OptionsFlow):
     """Handle options for the Tewke integration."""
 
     async def async_step_init(
-        self, user_input: dict[str, float] | None = None
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage fan default speed options."""
+        """Manage fan default speed and heating climate entity options."""
         entry = self.config_entry
         scene_control_types: dict[str, str] = entry.data.get("scene_control_types", {})
         disabled_scenes = entry.data.get(CONF_DISABLED_SCENES, [])
 
+        runtime_data = getattr(entry, "runtime_data", None)
         coordinator: TewkeCoordinator | None = getattr(
-            getattr(entry, "runtime_data", None), "coordinator", None
+            runtime_data, "coordinator", None
         )
+        tap = getattr(runtime_data, "tap", None)
+        supports_heating = tap_supports_heating(tap) if tap is not None else False
+
         scenes: dict[str, Scene] = (
             coordinator.data["scenes"] if coordinator and coordinator.data else {}
         )
@@ -374,31 +457,61 @@ class TewkeOptionsFlow(OptionsFlow):
             and scene_id not in disabled_scenes
         }
 
-        if not fan_scenes:
+        if not fan_scenes and not supports_heating:
             return self.async_abort(reason="no_fan_scenes")
 
         current_speeds = _get_default_scene_fan_dimming(entry)
         label_to_id = _build_unique_scene_labels(fan_scenes)
 
         if user_input is not None:
-            default_scene_fan_dimming = {
-                label_to_id[name]: int(value)
-                for name, value in user_input.items()
-                if name in label_to_id
-            }
-            return self.async_create_entry(
-                data={CONF_DEFAULT_SCENE_FAN_DIMMING: default_scene_fan_dimming}
-            )
+            options_data: dict[str, Any] = dict(entry.options)
+            if fan_scenes:
+                options_data[CONF_DEFAULT_SCENE_FAN_DIMMING] = {
+                    label_to_id[name]: int(value)
+                    for name, value in user_input.items()
+                    if name in label_to_id
+                }
+            if supports_heating:
+                raw_entities = user_input.get(CONF_CLIMATE_ENTITIES) or []
+                options_data[CONF_CLIMATE_ENTITIES] = (
+                    [str(e) for e in raw_entities if isinstance(e, str)]
+                    if isinstance(raw_entities, list)
+                    else []
+                )
+                raw_primary = user_input.get(CONF_PRIMARY_CLIMATE_ENTITY)
+                options_data[CONF_PRIMARY_CLIMATE_ENTITY] = (
+                    raw_primary
+                    if isinstance(raw_primary, str) and raw_primary
+                    else None
+                )
+            return self.async_create_entry(data=options_data)
+
+        schema_fields: dict[Any, Any] = {
+            vol.Required(
+                label,
+                default=current_speeds.get(scene_id, DEFAULT_SCENE_FAN_DIMMING),
+            ): _FAN_SPEED_SELECTOR
+            for label, scene_id in label_to_id.items()
+        }
+
+        if supports_heating:
+            existing_entities = get_configured_climate_entities(entry)
+            existing_primary = get_configured_primary_climate_entity(entry)
+            schema_fields[
+                vol.Optional(CONF_CLIMATE_ENTITIES, default=existing_entities)
+            ] = _CLIMATE_ENTITIES_SELECTOR
+            if existing_primary:
+                schema_fields[
+                    vol.Optional(
+                        CONF_PRIMARY_CLIMATE_ENTITY, default=existing_primary
+                    )
+                ] = _PRIMARY_CLIMATE_ENTITY_SELECTOR
+            else:
+                schema_fields[vol.Optional(CONF_PRIMARY_CLIMATE_ENTITY)] = (
+                    _PRIMARY_CLIMATE_ENTITY_SELECTOR
+                )
 
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        label,
-                        default=current_speeds.get(scene_id, DEFAULT_SCENE_FAN_DIMMING),
-                    ): _FAN_SPEED_SELECTOR
-                    for label, scene_id in label_to_id.items()
-                }
-            ),
+            data_schema=vol.Schema(schema_fields),
         )

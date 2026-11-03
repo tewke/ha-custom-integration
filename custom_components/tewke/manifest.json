@@ -14,9 +14,9 @@
   ],
   "quality_scale": "bronze",
   "requirements": [
-    "pytewke==0.8.3"
+    "pytewke==0.9.0rc1"
   ],
-  "version": "0.2.1",
+  "version": "0.3.0rc1",
   "zeroconf": [
     {
       "type": "_tewke-coap._udp.local."

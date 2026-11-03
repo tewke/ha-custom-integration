@@ -30,6 +30,14 @@
 				"description": "Set the default scene value (1\u2013100) to be applied when each scene is turned on without a specific value.",
 				"title": "Default scene dimming"
 			},
+			"heating": {
+				"description": "Optionally select one or more Home Assistant climate entities to display and control on the Tewke Tap Heating Screen.",
+				"title": "Heating control",
+				"data": {
+					"climate_entities": "Climate entities",
+					"primary_climate_entity": "Primary room climate entity"
+				}
+			},
 			"confirmation": {
 				"description": "Your Tewke device **{name}** is ready to be added to Home Assistant. Click Submit to complete the setup.",
 				"title": "Final setup"
@@ -42,8 +50,12 @@
 		},
 		"step": {
 			"init": {
-				"description": "Set the default scene value (1\u2013100) to be applied when each scene is turned on without a specific value.",
-				"title": "Default scene dimming"
+				"description": "Configure default fan scene dimming values and Home Assistant climate entities for the Tap Heating Screen.",
+				"title": "Tewke options",
+				"data": {
+					"climate_entities": "Climate entities",
+					"primary_climate_entity": "Primary room climate entity"
+				}
 			}
 		}
 	},

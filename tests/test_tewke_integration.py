@@ -15,6 +15,8 @@ from pytewke.data import (
     ConfigData,
     EnergyData,
     EnergyOverrideData,
+    HeatingCommandData,
+    HeatingData,
     RadarData,
     Scene,
     SensorData,
@@ -28,12 +30,23 @@ from custom_components.tewke.binary_sensor import TewkeScreenBinarySensor
 from custom_components.tewke.button import TewkeRestartButton
 from custom_components.tewke.config_flow import (
     TewkeConfigFlow,
+    TewkeOptionsFlow,
     _build_unique_scene_labels,
 )
-from custom_components.tewke.const import DOMAIN
+from custom_components.tewke.const import (
+    CONF_CLIMATE_ENTITIES,
+    CONF_PRIMARY_CLIMATE_ENTITY,
+    DOMAIN,
+)
 from custom_components.tewke.coordinator import TewkeCoordinator
 from custom_components.tewke.data import TewkeData
 from custom_components.tewke.diagnostics import async_get_config_entry_diagnostics
+from custom_components.tewke.heating import (
+    async_handle_heating_command,
+    async_push_heating_state,
+    build_heating_zones,
+    tap_supports_heating,
+)
 from custom_components.tewke.number import TewkeEnergyOverrideNumber
 from custom_components.tewke.scene import (
     TewkeSceneFan,
@@ -474,6 +487,178 @@ class TestConfigFlowUserStep(unittest.IsolatedAsyncioTestCase):
             assert result["type"] == "form"
             assert result["errors"] == {"base": "cannot_connect"}
             mock_tap.close.assert_awaited_once()
+
+
+class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
+    """Test Home Assistant heating bridge, config/options flows, and compatibility."""
+
+    async def test_backwards_compatibility_when_heating_not_supported(self) -> None:
+        """Verify older Tap firmware without /heating skips heating calls and steps."""
+        hass = MagicMock()
+        entry = _make_mock_entry()
+        mock_tap = MagicMock()
+        mock_tap.resources = {"config": MagicMock()}
+        mock_tap.close_observations = AsyncMock()
+        mock_tap.observe = AsyncMock()
+        mock_tap.set_heating = AsyncMock()
+        mock_tap.clear_heating = AsyncMock()
+
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=mock_tap,
+            coordinator=coordinator,
+            scene_control_types={},
+        )
+
+        assert not tap_supports_heating(mock_tap)
+        assert await async_push_heating_state(hass, entry) is None
+        mock_tap.set_heating.assert_not_called()
+        mock_tap.clear_heating.assert_not_called()
+
+        await async_setup_observe(coordinator, hass, entry)
+        assert "heating_callback" not in mock_tap.observe.call_args.kwargs
+
+        # Options flow aborts with no_fan_scenes when neither fan scenes nor /heating
+        entry.data = {"scene_control_types": {"s1": "light"}}
+        options_flow = TewkeOptionsFlow()
+        options_flow.hass = hass
+        with patch.object(
+            TewkeOptionsFlow, "config_entry", new=entry
+        ):
+            res = await options_flow.async_step_init()
+            assert res["type"] == "abort"
+            assert res["reason"] == "no_fan_scenes"
+
+    async def test_heating_zones_push_and_command_handling(self) -> None:
+        """Verify HA climate states build HeatingZoneData and commands call HA."""
+        hass = MagicMock()
+        hass.services.async_call = AsyncMock()
+        lr_state = SimpleNamespace(
+            state="heat",
+            attributes={
+                "friendly_name": "Living Room Thermostat",
+                "current_temperature": 20.5,
+                "temperature": 22.0,
+                "hvac_action": "heating",
+                "min_temp": 7.0,
+                "max_temp": 30.0,
+            },
+        )
+        br_state = SimpleNamespace(
+            state="off",
+            attributes={
+                "friendly_name": "Bedroom Thermostat",
+                "current_temperature": 18.0,
+                "temperature": 19.0,
+                "hvac_action": "off",
+            },
+        )
+        states_map = {
+            "climate.living_room": lr_state,
+            "climate.bedroom": br_state,
+        }
+        hass.states.get = MagicMock(side_effect=states_map.get)
+
+        entry = _make_mock_entry()
+        entry.data[CONF_CLIMATE_ENTITIES] = [
+            "climate.living_room",
+            "climate.bedroom",
+        ]
+        entry.data[CONF_PRIMARY_CLIMATE_ENTITY] = "climate.living_room"
+
+        zones = build_heating_zones(hass, entry)
+        assert len(zones) == 2
+        assert zones["climate.living_room"].name == "Living Room Thermostat"
+        assert zones["climate.living_room"].current_temperature == 20.5
+        assert zones["climate.living_room"].target_temperature == 22.0
+        assert zones["climate.living_room"].system_mode == "heat"
+        assert zones["climate.living_room"].actively_heating
+        assert zones["climate.living_room"].is_this_room
+        assert zones["climate.living_room"].min_temp == 7.0
+        assert zones["climate.living_room"].max_temp == 30.0
+
+        assert zones["climate.bedroom"].system_mode == "off"
+        assert not zones["climate.bedroom"].actively_heating
+        assert not zones["climate.bedroom"].is_this_room
+
+        mock_tap = MagicMock()
+        mock_tap.resources = {"heating": MagicMock()}
+        mock_tap.set_heating = AsyncMock(
+            return_value=HeatingData(active=True, zones=zones)
+        )
+        coordinator = MagicMock()
+        coordinator.data = {}
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=mock_tap,
+            coordinator=coordinator,
+            scene_control_types={},
+        )
+
+        pushed = await async_push_heating_state(hass, entry)
+        assert pushed is not None
+        assert pushed.active
+        mock_tap.set_heating.assert_awaited_once_with(zones, active=True)
+
+        # Command from Tap triggers climate.set_hvac_mode and climate.set_temperature
+        cmd = HeatingCommandData(
+            zone_id="climate.living_room",
+            target_temperature=23.5,
+            system_mode="heat",
+        )
+        await async_handle_heating_command(hass, entry, cmd)
+        assert hass.services.async_call.await_count == 2
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": "climate.living_room", "hvac_mode": "heat"},
+            blocking=True,
+        )
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_temperature",
+            {"entity_id": "climate.living_room", "temperature": 23.5},
+            blocking=True,
+        )
+
+    async def test_config_and_options_flow_with_heating_support(self) -> None:
+        """Verify config flow steps through heating when /heating is advertised."""
+        flow = TewkeConfigFlow()
+        flow.hass = MagicMock()
+        flow._discovered_host = "192.168.1.50"
+        flow._discovered_name = "Living Room Tap"
+        flow._room_name = "Living Room"
+
+        mock_tap = MagicMock()
+        mock_tap.resources = {"heating": MagicMock()}
+        mock_tap.get_scenes = AsyncMock(return_value={})
+        mock_tap.close = AsyncMock()
+        flow._tap = mock_tap
+
+        # No scenes -> proceeds directly to heating step because /heating is present
+        step_res = await flow.async_step_confirm_control_types()
+        assert step_res["type"] == "form"
+        assert step_res["step_id"] == "heating"
+
+        # Submit heating entities -> proceeds to confirmation
+        step_res2 = await flow.async_step_heating(
+            {
+                CONF_CLIMATE_ENTITIES: ["climate.living_room"],
+                CONF_PRIMARY_CLIMATE_ENTITY: "climate.living_room",
+            }
+        )
+        assert step_res2["type"] == "form"
+        assert step_res2["step_id"] == "confirmation"
+
+        # Submit confirmation -> creates entry with climate entities
+        create_res = await flow.async_step_confirmation({})
+        assert create_res["type"] == "create_entry"
+        assert create_res["data"][CONF_CLIMATE_ENTITIES] == ["climate.living_room"]
+        assert (
+            create_res["data"][CONF_PRIMARY_CLIMATE_ENTITY] == "climate.living_room"
+        )
 
 
 if __name__ == "__main__":

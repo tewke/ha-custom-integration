@@ -16,6 +16,7 @@ from pytewke.error import (
 )
 
 from .const import LOGGER
+from .heating import tap_supports_heating
 from .util import async_setup_observe
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
         ConfigData,
         EnergyData,
         EnergyOverrideData,
+        HeatingData,
         RadarData,
         Scene,
         SensorData,
@@ -47,7 +49,22 @@ _RETRY_DELAYS: list[float] = [1.0, 2.0, 4.0]
 # Seconds of observation silence before we treat the connection as lost.
 _OBSERVATION_TIMEOUT_SECS = 30
 
-# Fallback polling interval.  The coordinator is primarily push-based; this
+async def _fetch_optional[T](
+    fn: Callable[[], Awaitable[T]],
+    fallback: T | None,
+    label: str,
+) -> T | None:
+    """Fetch an optional resource from the Tap, returning *fallback* on error."""
+    try:
+        return await fn()
+    except (
+        PyTewkeCoapError,
+        PyTewkeInvalidResponseError,
+        PyTewkeUnknownError,
+        TimeoutError,
+    ) as err:
+        LOGGER.debug("%s data not available from Tewke Tap: %s", label, err)
+        return fallback
 # acts as a safety-net so that if observations go silent the coordinator can
 # still recover without requiring a restart.
 _RECOVERY_INTERVAL = timedelta(minutes=5)
@@ -91,6 +108,7 @@ class TewkeCoordinatorData(TypedDict):
     energy: EnergyData | None
     energy_override: EnergyOverrideData | None
     config: ConfigData | None
+    heating: HeatingData | None
 
 
 class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
@@ -296,60 +314,18 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
 
         prev = self.data or {}
 
-        try:
-            sensors: SensorData | None = await tap.get_sensors()
-        except (
-            PyTewkeCoapError,
-            PyTewkeInvalidResponseError,
-            PyTewkeUnknownError,
-            TimeoutError,
-        ) as err:
-            LOGGER.debug("Sensor data not available from Tewke Tap: %s", err)
-            sensors = prev.get("sensors")
-
-        try:
-            radar: RadarData | None = await tap.get_radar()
-        except (
-            PyTewkeCoapError,
-            PyTewkeInvalidResponseError,
-            PyTewkeUnknownError,
-            TimeoutError,
-        ) as err:
-            LOGGER.debug("Radar data not available from Tewke Tap: %s", err)
-            radar = prev.get("radar")
-
-        try:
-            energy: EnergyData | None = await tap.get_energy()
-        except (
-            PyTewkeCoapError,
-            PyTewkeInvalidResponseError,
-            PyTewkeUnknownError,
-            TimeoutError,
-        ) as err:
-            LOGGER.debug("Energy data not available from Tewke Tap: %s", err)
-            energy = prev.get("energy")
-
-        try:
-            energy_override: EnergyOverrideData | None = await tap.get_energy_override()
-        except (
-            PyTewkeCoapError,
-            PyTewkeInvalidResponseError,
-            PyTewkeUnknownError,
-            TimeoutError,
-        ) as err:
-            LOGGER.debug("Energy override data not available from Tewke Tap: %s", err)
-            energy_override = prev.get("energy_override")
-
-        try:
-            config: ConfigData | None = await tap.get_config()
-        except (
-            PyTewkeCoapError,
-            PyTewkeInvalidResponseError,
-            PyTewkeUnknownError,
-            TimeoutError,
-        ) as err:
-            LOGGER.debug("Config data not available from Tewke Tap: %s", err)
-            config = prev.get("config")
+        sensors = await _fetch_optional(
+            tap.get_sensors, prev.get("sensors"), "Sensor"
+        )
+        radar = await _fetch_optional(tap.get_radar, prev.get("radar"), "Radar")
+        energy = await _fetch_optional(tap.get_energy, prev.get("energy"), "Energy")
+        energy_override = await _fetch_optional(
+            tap.get_energy_override, prev.get("energy_override"), "Energy override"
+        )
+        config = await _fetch_optional(tap.get_config, prev.get("config"), "Config")
+        heating: HeatingData | None = prev.get("heating")
+        if tap_supports_heating(tap):
+            heating = await _fetch_optional(tap.get_heating, heating, "Heating")
 
         return TewkeCoordinatorData(
             scenes=configured_scenes,
@@ -360,4 +336,5 @@ class TewkeCoordinator(DataUpdateCoordinator[TewkeCoordinatorData]):
             energy=energy,
             energy_override=energy_override,
             config=config,
+            heating=heating,
         )

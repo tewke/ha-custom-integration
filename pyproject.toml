@@ -1,11 +1,11 @@
 [project]
 name = "ha-custom-integration"
-version = "0.2.1"
+version = "0.3.0rc1"
 requires-python = ">=3.14.2"
 dependencies = [
     "colorlog==6.10.1",
     "homeassistant==2026.5.1",
-    "pytewke==0.8.3",
+    "pytewke==0.9.0rc1",
     "voluptuous>=0.15.2",
 ]
 

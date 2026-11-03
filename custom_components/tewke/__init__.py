@@ -12,6 +12,10 @@ from pytewke.error import BasePyTewkeError
 from .const import DOMAIN, LOGGER
 from .coordinator import TewkeCoordinator
 from .data import TewkeData
+from .heating import (
+    async_setup_climate_state_listener,
+    cancel_climate_state_listener,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -66,7 +70,9 @@ async def async_setup_entry(
         raise
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    async_setup_climate_state_listener(hass, entry)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    entry.async_on_unload(lambda: cancel_climate_state_listener(entry))
     entry.async_on_unload(tewke_coordinator.cancel_observation_timeout)
     entry.async_on_unload(tap.close)
 
@@ -82,9 +88,10 @@ async def async_unload_entry(
 
 
 async def async_reload_entry(
-    _hass: HomeAssistant,
+    hass: HomeAssistant,
     entry: TewkeConfigEntry,
 ) -> None:
     """Handle config entry options/data update."""
     if hasattr(entry, "runtime_data") and entry.runtime_data is not None:
+        async_setup_climate_state_listener(hass, entry)
         entry.runtime_data.coordinator.async_update_listeners()

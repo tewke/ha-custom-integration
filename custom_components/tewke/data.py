@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import pytewke
     from homeassistant.config_entries import ConfigEntry
     from pytewke.data import Scene
@@ -25,3 +27,4 @@ class TewkeData:
     scene_control_types: dict[str, str]
     pending_scenes: dict[str, Scene] = field(default_factory=dict)
     observe_active: bool = False
+    climate_unsub: Callable[[], None] | None = None

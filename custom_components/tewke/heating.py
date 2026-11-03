@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 _DEFAULT_TEMP = 20.0
 _DEFAULT_MIN_TEMP = 5.0
 _DEFAULT_MAX_TEMP = 35.0
-_COMMAND_GRACE_SECS = 3.5
+_COMMAND_GRACE_SECS = 15.0
 _SUPPORTED_SYSTEM_MODES: tuple[str, ...] = (
     HVACMode.HEAT,
     HVACMode.COOL,
@@ -173,25 +173,30 @@ def _parse_str_list(raw: Any) -> list[str]:
     return result
 
 
+_DIRECT_MODE_MAP: dict[str, Literal["heat", "cool", "dry", "fan_only", "off"]] = {
+    HVACMode.OFF: "off",
+    HVACMode.COOL: "cool",
+    "cooling": "cool",
+    HVACMode.DRY: "dry",
+    "drying": "dry",
+    HVACMode.FAN_ONLY: "fan_only",
+    "fanonly": "fan_only",
+    "fan": "fan_only",
+    HVACMode.HEAT: "heat",
+    "heating": "heat",
+}
+
+
 def _resolve_system_modes(raw_hvac_modes: Any) -> list[str]:
     """Filter HA hvac_modes to supported Tewke system modes."""
     if not isinstance(raw_hvac_modes, (list, tuple, set)):
         return list(_DEFAULT_SYSTEM_MODES)
     modes: list[str] = []
     for mode in raw_hvac_modes:
-        mode_str = str(mode)
-        if mode_str in _SUPPORTED_SYSTEM_MODES and mode_str not in modes:
-            modes.append(mode_str)
+        mapped = _DIRECT_MODE_MAP.get(str(mode).strip().lower())
+        if mapped is not None and mapped not in modes:
+            modes.append(mapped)
     return modes or list(_DEFAULT_SYSTEM_MODES)
-
-
-_DIRECT_MODE_MAP: dict[str, Literal["heat", "cool", "dry", "fan_only", "off"]] = {
-    HVACMode.OFF: "off",
-    HVACMode.COOL: "cool",
-    HVACMode.DRY: "dry",
-    HVACMode.FAN_ONLY: "fan_only",
-    HVACMode.HEAT: "heat",
-}
 
 
 def _resolve_system_mode(
@@ -202,7 +207,7 @@ def _resolve_system_mode(
     system_modes: list[str],
 ) -> Literal["heat", "cool", "dry", "fan_only", "off"]:
     """Map an HA climate state string to a Tewke system mode."""
-    direct = _DIRECT_MODE_MAP.get(state_str)
+    direct = _DIRECT_MODE_MAP.get(str(state_str).strip().lower())
     if direct is not None:
         return direct
     if actively_cooling:
@@ -223,10 +228,13 @@ def _apply_pending_command(
     if pending is None:
         return zone
 
-    if pending.system_mode is not None and zone.system_mode == pending.prev_system_mode:
-        zone.system_mode = pending.system_mode  # type: ignore[assignment]
-    else:
-        pending.system_mode = None
+    if pending.system_mode is not None:
+        if zone.system_mode == pending.system_mode:
+            pending.system_mode = None
+        elif pending.prev_system_mode in (zone.system_mode, "off"):
+            zone.system_mode = pending.system_mode  # type: ignore[assignment]
+        else:
+            pending.system_mode = None
 
     if (
         pending.target_temperature is not None
@@ -277,13 +285,13 @@ def _build_zone_from_state(
     name = str(attrs.get(ATTR_FRIENDLY_NAME) or entity_id)
     system_modes = _resolve_system_modes(attrs.get(ATTR_HVAC_MODES))
 
-    hvac_action = attrs.get(ATTR_HVAC_ACTION)
-    actively_heating = bool(hvac_action == HVACAction.HEATING)
-    actively_cooling = bool(hvac_action == HVACAction.COOLING)
+    hvac_action = str(attrs.get(ATTR_HVAC_ACTION) or "").strip().lower()
+    raw_heating = bool(hvac_action == HVACAction.HEATING)
+    raw_cooling = bool(hvac_action == HVACAction.COOLING)
     system_mode = _resolve_system_mode(
         state.state,
-        actively_cooling=actively_cooling,
-        actively_heating=actively_heating,
+        actively_cooling=raw_cooling,
+        actively_heating=raw_heating,
         system_modes=system_modes,
     )
 
@@ -307,8 +315,8 @@ def _build_zone_from_state(
         current_temperature=current_temp,
         target_temperature=target_temp,
         system_mode=system_mode,
-        actively_heating=actively_heating,
-        actively_cooling=actively_cooling,
+        actively_heating=raw_heating and system_mode == "heat",
+        actively_cooling=raw_cooling and system_mode == "cool",
         online=online,
         is_this_room=is_this_room,
         min_temp=_parse_float(attrs.get(ATTR_MIN_TEMP), _DEFAULT_MIN_TEMP),
@@ -319,7 +327,20 @@ def _build_zone_from_state(
         fan_mode=_parse_non_empty_str(attrs.get(ATTR_FAN_MODE)),
         fan_modes=_parse_str_list(attrs.get(ATTR_FAN_MODES)),
     )
-    return _apply_pending_command(zone, pending)
+    resolved = _apply_pending_command(zone, pending)
+    if resolved.system_mode != "heat":
+        resolved.actively_heating = False
+    if resolved.system_mode != "cool":
+        resolved.actively_cooling = False
+    LOGGER.debug(
+        "Built zone %s: ha_state=%r -> system_mode=%r (modes=%s, fan=%r)",
+        entity_id,
+        state.state,
+        resolved.system_mode,
+        resolved.system_modes,
+        resolved.fan_mode,
+    )
+    return resolved
 
 
 def _get_active_pending_commands(
@@ -600,6 +621,11 @@ async def async_handle_heating_command(
                 },
             )
     finally:
+        pending_map = getattr(runtime_data, "pending_heating_commands", None)
+        if isinstance(pending_map, dict) and command.zone_id in pending_map:
+            pending_map[command.zone_id].expires_at = (
+                time.monotonic() + _COMMAND_GRACE_SECS
+            )
         if runtime_data is not None and hasattr(
             runtime_data, "heating_commands_in_flight"
         ):
@@ -652,10 +678,43 @@ def async_setup_climate_state_listener(
 
     @callback
     def _async_on_climate_state_change(
-        _event: Event[EventStateChangedData],
+        event: Event[EventStateChangedData],
     ) -> None:
         if getattr(runtime_data, "heating_commands_in_flight", 0) > 0:
             return
+        entity_id = event.data.get("entity_id")
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        pending_map = _get_active_pending_commands(entry)
+        pending = pending_map.get(entity_id) if isinstance(entity_id, str) else None
+        if (
+            pending is not None
+            and pending.system_mode not in (None, "off")
+            and old_state is not None
+            and old_state.state in (HVACMode.OFF, STATE_UNAVAILABLE, STATE_UNKNOWN)
+            and new_state is not None
+            and new_state.state
+            not in (
+                pending.system_mode,
+                HVACMode.OFF,
+                STATE_UNAVAILABLE,
+                STATE_UNKNOWN,
+            )
+        ):
+            target_mode = pending.system_mode
+            pending.prev_system_mode = _DIRECT_MODE_MAP.get(
+                str(new_state.state).strip().lower(), "cool"
+            )
+            hass.async_create_task(
+                _async_call_climate_service(
+                    hass,
+                    SERVICE_SET_HVAC_MODE,
+                    {
+                        ATTR_ENTITY_ID: entity_id,
+                        ATTR_HVAC_MODE: target_mode,
+                    },
+                )
+            )
         hass.async_create_task(async_push_heating_state(hass, entry))
 
     entry.runtime_data.climate_unsub = async_track_state_change_event(

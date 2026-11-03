@@ -19,6 +19,7 @@ from pytewke.data import (
     Scene,
     SensorData,
     Target,
+    UpdateStatus,
 )
 from pytewke.error import PyTewkeCoapError, PyTewkeDiscoveryError
 
@@ -371,8 +372,14 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         assert len(listeners) == 1
 
         # Simulate Tap upgrading to new switch-ui that emits updateStatus in /config
-        cfg_with_status = MagicMock()
-        cfg_with_status.update_status = SimpleNamespace(value="downloading")
+        cfg_with_status = ConfigData(
+            roomId="r1",
+            roomName="Living Room",
+            deviceName="Living Room Tap",
+            hardwareId="dock_123",
+            tewkeOsVersion="1.2.0",
+            updateStatus="downloading",
+        )
         coordinator.data["config"] = cfg_with_status
         listeners[0]()
 
@@ -381,9 +388,9 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         assert config_sensors[0].native_value == "downloading"
 
         # Transition to pending_reboot and complete
-        cfg_with_status.update_status = SimpleNamespace(value="pending_reboot")
+        cfg_with_status.update_status = UpdateStatus.PENDING_REBOOT
         assert config_sensors[0].native_value == "pending_reboot"
-        cfg_with_status.update_status = SimpleNamespace(value="complete")
+        cfg_with_status.update_status = UpdateStatus.COMPLETE
         assert config_sensors[0].native_value == "complete"
 
     async def test_scene_light_optimistic_state_preserved(self) -> None:

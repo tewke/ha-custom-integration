@@ -28,6 +28,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import callback
+from pytewke.data import UpdateStatus
 
 from .entity import TewkeEntity
 
@@ -412,18 +413,7 @@ class TewkeConfigSensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[ConfigData], str | None]
 
 
-UPDATE_STATUS_OPTIONS: list[str] = [
-    "idle",
-    "pending_download",
-    "downloading",
-    "pending_install",
-    "installing",
-    "pending_reboot",
-    "post_reboot_checks",
-    "complete",
-    "failed",
-    "cancelled",
-]
+UPDATE_STATUS_OPTIONS: list[str] = [status.value for status in UpdateStatus]
 
 CONFIG_SENSOR_DESCRIPTIONS: tuple[TewkeConfigSensorEntityDescription, ...] = (
     TewkeConfigSensorEntityDescription(

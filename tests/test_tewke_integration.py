@@ -8,7 +8,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.const import CONF_HOST, CONF_NAME
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.const import CONF_HOST, CONF_NAME, EntityCategory
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from pytewke.data import (
     ConfigData,
@@ -37,6 +38,13 @@ from custom_components.tewke.scene import (
     TewkeSceneFan,
     TewkeSceneLight,
     TewkeSceneSwitch,
+)
+from custom_components.tewke.sensor import (
+    CONFIG_SENSOR_DESCRIPTIONS,
+    TewkeConfigSensor,
+)
+from custom_components.tewke.sensor import (
+    async_setup_entry as async_setup_sensor_entry,
 )
 from custom_components.tewke.target import TewkeTargetLight
 from custom_components.tewke.util import (
@@ -317,6 +325,7 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         screen_sensor = TewkeScreenBinarySensor(coordinator)
         override_num = TewkeEnergyOverrideNumber(coordinator)
         restart_btn = TewkeRestartButton(coordinator)
+        update_sensor = TewkeConfigSensor(coordinator, CONFIG_SENSOR_DESCRIPTIONS[0])
 
         assert scene_light.unique_id == "dock_123_s1"
         assert not scene_switch.is_on
@@ -326,6 +335,56 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         assert screen_sensor.is_on
         assert override_num.native_value == 150.0
         assert restart_btn.unique_id == "dock_123_restart"
+        assert update_sensor.unique_id == "dock_123_update_status"
+        assert update_sensor.native_value is None
+        assert (
+            update_sensor.entity_description.entity_category
+            == EntityCategory.DIAGNOSTIC
+        )
+        assert update_sensor.entity_description.device_class == SensorDeviceClass.ENUM
+
+    async def test_software_update_status_sensor_and_backwards_compatibility(
+        self,
+    ) -> None:
+        """Software update status sensor handles old firmware and late discovery."""
+        coordinator, _ = self._make_coordinator()
+        # Simulate older switch-ui firmware that sends /config without updateStatus
+        coordinator.data["config"] = ConfigData(
+            roomId="r1",
+            roomName="Living Room",
+            deviceName="Living Room Tap",
+            hardwareId="dock_123",
+            tewkeOsVersion="1.2.0",
+        )
+        added: list[object] = []
+        listeners: list[object] = []
+        coordinator.async_add_listener = lambda cb: listeners.append(cb) or (
+            lambda: None
+        )
+
+        await async_setup_sensor_entry(
+            MagicMock(), coordinator.config_entry, added.extend
+        )
+
+        # Radar sensors were added, but update_status was skipped because it is None
+        assert not any(isinstance(e, TewkeConfigSensor) for e in added)
+        assert len(listeners) == 1
+
+        # Simulate Tap upgrading to new switch-ui that emits updateStatus in /config
+        cfg_with_status = MagicMock()
+        cfg_with_status.update_status = SimpleNamespace(value="downloading")
+        coordinator.data["config"] = cfg_with_status
+        listeners[0]()
+
+        config_sensors = [e for e in added if isinstance(e, TewkeConfigSensor)]
+        assert len(config_sensors) == 1
+        assert config_sensors[0].native_value == "downloading"
+
+        # Transition to pending_reboot and complete
+        cfg_with_status.update_status = SimpleNamespace(value="pending_reboot")
+        assert config_sensors[0].native_value == "pending_reboot"
+        cfg_with_status.update_status = SimpleNamespace(value="complete")
+        assert config_sensors[0].native_value == "complete"
 
     async def test_scene_light_optimistic_state_preserved(self) -> None:
         """Turning on a scene light updates _scene in-place before writing state."""

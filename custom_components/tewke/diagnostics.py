@@ -54,6 +54,11 @@ async def async_get_config_entry_diagnostics(
             "device": {
                 "wall_dock_id": tap.wall_dock_id,
                 "tewke_os_version": tap.tewke_os_version,
+                "update_status": (
+                    tap.update_status.value
+                    if getattr(tap, "update_status", None) is not None
+                    else None
+                ),
                 "observe_active": runtime_data.observe_active,
                 "is_retrying_observe": coordinator.is_retrying_observe,
                 "pending_scenes_count": len(runtime_data.pending_scenes),

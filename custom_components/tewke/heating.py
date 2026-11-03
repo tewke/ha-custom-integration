@@ -75,9 +75,15 @@ def get_configured_climate_entities(entry: TewkeConfigEntry) -> list[str]:
         raw = entry.options.get(CONF_CLIMATE_ENTITIES)
     else:
         raw = entry.data.get(CONF_CLIMATE_ENTITIES)
-    if not isinstance(raw, list):
-        return []
-    return [str(entity_id) for entity_id in raw if isinstance(entity_id, str)]
+    entities = (
+        [str(entity_id) for entity_id in raw if isinstance(entity_id, str)]
+        if isinstance(raw, list)
+        else []
+    )
+    primary = get_configured_primary_climate_entity(entry)
+    if primary and primary not in entities:
+        entities.insert(0, primary)
+    return entities
 
 
 def get_configured_primary_climate_entity(entry: TewkeConfigEntry) -> str | None:

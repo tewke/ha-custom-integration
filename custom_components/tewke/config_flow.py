@@ -349,19 +349,19 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
         """Select HA climate entities to display on the Tap Heating Screen."""
         if user_input is not None:
             raw_entities = user_input.get(CONF_CLIMATE_ENTITIES) or []
-            self._climate_entities = (
+            cleaned_entities = (
                 [str(e) for e in raw_entities if isinstance(e, str)]
                 if isinstance(raw_entities, list)
                 else []
             )
             raw_primary = user_input.get(CONF_PRIMARY_CLIMATE_ENTITY)
-            self._primary_climate_entity = (
-                raw_primary
-                if isinstance(raw_primary, str)
-                and raw_primary
-                and raw_primary in self._climate_entities
-                else None
+            primary_entity = (
+                raw_primary if isinstance(raw_primary, str) and raw_primary else None
             )
+            if primary_entity and primary_entity not in cleaned_entities:
+                cleaned_entities.insert(0, primary_entity)
+            self._climate_entities = cleaned_entities
+            self._primary_climate_entity = primary_entity
             return await self.async_step_confirmation()
 
         existing_entities: list[str] = getattr(self, "_climate_entities", [])
@@ -498,15 +498,16 @@ class TewkeOptionsFlow(OptionsFlow):
                     if isinstance(raw_entities, list)
                     else []
                 )
-                options_data[CONF_CLIMATE_ENTITIES] = cleaned_entities
                 raw_primary = user_input.get(CONF_PRIMARY_CLIMATE_ENTITY)
-                options_data[CONF_PRIMARY_CLIMATE_ENTITY] = (
+                primary_entity = (
                     raw_primary
-                    if isinstance(raw_primary, str)
-                    and raw_primary
-                    and raw_primary in cleaned_entities
+                    if isinstance(raw_primary, str) and raw_primary
                     else None
                 )
+                if primary_entity and primary_entity not in cleaned_entities:
+                    cleaned_entities.insert(0, primary_entity)
+                options_data[CONF_CLIMATE_ENTITIES] = cleaned_entities
+                options_data[CONF_PRIMARY_CLIMATE_ENTITY] = primary_entity
             return self.async_create_entry(data=options_data)
 
         schema_fields: dict[Any, Any] = {
@@ -520,6 +521,24 @@ class TewkeOptionsFlow(OptionsFlow):
         if supports_heating:
             existing_entities = get_configured_climate_entities(entry)
             existing_primary = get_configured_primary_climate_entity(entry)
+            if (
+                not existing_entities
+                and CONF_CLIMATE_ENTITIES not in entry.options
+                and CONF_CLIMATE_ENTITIES not in entry.data
+                and coordinator is not None
+                and coordinator.data
+            ):
+                tap_heating = coordinator.data.get("heating")
+                if tap_heating is not None and tap_heating.active and tap_heating.zones:
+                    existing_entities = list(tap_heating.zones.keys())
+                    existing_primary = next(
+                        (
+                            z.id
+                            for z in tap_heating.zones.values()
+                            if z.is_this_room
+                        ),
+                        None,
+                    )
             schema_fields[
                 vol.Optional(CONF_CLIMATE_ENTITIES, default=existing_entities)
             ] = _CLIMATE_ENTITIES_SELECTOR

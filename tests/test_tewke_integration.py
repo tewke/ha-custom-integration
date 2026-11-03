@@ -540,23 +540,23 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
                 "current_temperature": 24.5,
                 "temperature": 21.0,
                 "hvac_action": "cooling",
-                "hvac_modes": ["heat", "cool", "auto", "off"],
+                "hvac_modes": ("heat", "cool", "dry", "fan_only", "auto", "off"),
                 "min_temp": 7.0,
                 "max_temp": 30.0,
                 "preset_mode": "comfort",
                 "preset_modes": ["none", "eco", "comfort", "boost"],
                 "fan_mode": "auto",
-                "fan_modes": ["auto", "low", "medium", "high"],
+                "fan_modes": ("auto", "low", "medium", "high"),
             },
         )
         br_state = SimpleNamespace(
-            state="off",
+            state="dry",
             attributes={
                 "friendly_name": "Bedroom Thermostat",
                 "current_temperature": 18.0,
                 "temperature": 19.0,
-                "hvac_action": "off",
-                "hvac_modes": ["heat"],
+                "hvac_action": "drying",
+                "hvac_modes": ["cool", "dry", "fan_only", "off"],
             },
         )
         states_map = {
@@ -586,6 +586,8 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         assert zones["climate.living_room"].system_modes == [
             "heat",
             "cool",
+            "dry",
+            "fan_only",
             "off",
         ]
         assert zones["climate.living_room"].preset_mode == "comfort"
@@ -603,8 +605,13 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             "high",
         ]
 
-        assert zones["climate.bedroom"].system_mode == "off"
-        assert zones["climate.bedroom"].system_modes == ["heat"]
+        assert zones["climate.bedroom"].system_mode == "dry"
+        assert zones["climate.bedroom"].system_modes == [
+            "cool",
+            "dry",
+            "fan_only",
+            "off",
+        ]
         assert not zones["climate.bedroom"].actively_heating
         assert not zones["climate.bedroom"].actively_cooling
         assert not zones["climate.bedroom"].is_this_room

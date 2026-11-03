@@ -312,7 +312,7 @@ async def async_setup_observe(  # noqa: PLR0915
     if coordinator.data and "scenes_all" in coordinator.data:
         _on_scene_update(coordinator.data["scenes_all"])
 
-    if tap_supports_heating(tap):
+    if tap_supports_heating(tap) and coordinator.data is not None:
         hass.async_create_task(async_push_heating_state(hass, entry))
 
     return True

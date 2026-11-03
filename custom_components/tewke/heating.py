@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -39,7 +40,7 @@ from homeassistant.core import Event, EventStateChangedData, HomeAssistant, call
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from pytewke.data import HeatingCommandData, HeatingData, HeatingZoneData
 from pytewke.error import BasePyTewkeError
 
@@ -48,16 +49,22 @@ from .const import (
     CONF_PRIMARY_CLIMATE_ENTITY,
     LOGGER,
 )
+from .data import PendingZoneCommand
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from .data import TewkeConfigEntry
 
 _DEFAULT_TEMP = 20.0
 _DEFAULT_MIN_TEMP = 5.0
 _DEFAULT_MAX_TEMP = 35.0
+_COMMAND_GRACE_SECS = 3.5
 _SUPPORTED_SYSTEM_MODES: tuple[str, ...] = (
     HVACMode.HEAT,
     HVACMode.COOL,
+    HVACMode.DRY,
+    HVACMode.FAN_ONLY,
     HVACMode.OFF,
 )
 _DEFAULT_SYSTEM_MODES: tuple[str, ...] = (HVACMode.HEAT, HVACMode.OFF)
@@ -149,19 +156,26 @@ def _parse_float(raw: Any, default: float) -> float:
 
 def _parse_non_empty_str(raw: Any) -> str | None:
     """Return stripped non-empty string or None."""
-    return str(raw) if isinstance(raw, str) and raw else None
+    if raw is None or isinstance(raw, bool):
+        return None
+    return str(raw).strip() or None
 
 
 def _parse_str_list(raw: Any) -> list[str]:
-    """Return a list of non-empty strings from a raw attribute list."""
-    if not isinstance(raw, list):
+    """Return a list of non-empty strings from a raw attribute sequence."""
+    if not isinstance(raw, (list, tuple, set)):
         return []
-    return [str(item) for item in raw if isinstance(item, str) and item]
+    result: list[str] = []
+    for item in raw:
+        val = _parse_non_empty_str(item)
+        if val is not None:
+            result.append(val)
+    return result
 
 
 def _resolve_system_modes(raw_hvac_modes: Any) -> list[str]:
     """Filter HA hvac_modes to supported Tewke system modes."""
-    if not isinstance(raw_hvac_modes, list):
+    if not isinstance(raw_hvac_modes, (list, tuple, set)):
         return list(_DEFAULT_SYSTEM_MODES)
     modes: list[str] = []
     for mode in raw_hvac_modes:
@@ -171,23 +185,68 @@ def _resolve_system_modes(raw_hvac_modes: Any) -> list[str]:
     return modes or list(_DEFAULT_SYSTEM_MODES)
 
 
+_DIRECT_MODE_MAP: dict[str, Literal["heat", "cool", "dry", "fan_only", "off"]] = {
+    HVACMode.OFF: "off",
+    HVACMode.COOL: "cool",
+    HVACMode.DRY: "dry",
+    HVACMode.FAN_ONLY: "fan_only",
+    HVACMode.HEAT: "heat",
+}
+
+
 def _resolve_system_mode(
     state_str: str,
     *,
     actively_cooling: bool,
+    actively_heating: bool,
     system_modes: list[str],
-) -> Literal["heat", "cool", "off"]:
+) -> Literal["heat", "cool", "dry", "fan_only", "off"]:
     """Map an HA climate state string to a Tewke system mode."""
-    if state_str == HVACMode.OFF:
-        return "off"
-    if state_str == HVACMode.COOL:
+    direct = _DIRECT_MODE_MAP.get(state_str)
+    if direct is not None:
+        return direct
+    if actively_cooling:
         return "cool"
-    if state_str != HVACMode.HEAT and (
-        actively_cooling
-        or (HVACMode.COOL in system_modes and HVACMode.HEAT not in system_modes)
-    ):
-        return "cool"
+    if actively_heating:
+        return "heat"
+    for candidate in ("heat", "cool", "dry", "fan_only"):
+        if candidate in system_modes:
+            return candidate
     return "heat"
+
+
+def _apply_pending_command(
+    zone: HeatingZoneData,
+    pending: PendingZoneCommand | None,
+) -> HeatingZoneData:
+    """Overlay unexpired Tap command values if HA state has not caught up yet."""
+    if pending is None:
+        return zone
+
+    if pending.system_mode is not None and zone.system_mode == pending.prev_system_mode:
+        zone.system_mode = pending.system_mode  # type: ignore[assignment]
+    else:
+        pending.system_mode = None
+
+    if (
+        pending.target_temperature is not None
+        and zone.target_temperature == pending.prev_target_temperature
+    ):
+        zone.target_temperature = pending.target_temperature
+    else:
+        pending.target_temperature = None
+
+    if pending.preset_mode is not None and zone.preset_mode == pending.prev_preset_mode:
+        zone.preset_mode = pending.preset_mode
+    else:
+        pending.preset_mode = None
+
+    if pending.fan_mode is not None and zone.fan_mode == pending.prev_fan_mode:
+        zone.fan_mode = pending.fan_mode
+    else:
+        pending.fan_mode = None
+
+    return zone
 
 
 def _build_zone_from_state(
@@ -195,6 +254,7 @@ def _build_zone_from_state(
     state: Any,
     *,
     is_this_room: bool,
+    pending: PendingZoneCommand | None = None,
 ) -> HeatingZoneData:
     """Build a single `HeatingZoneData` from an HA climate state object."""
     if state is None:
@@ -223,6 +283,7 @@ def _build_zone_from_state(
     system_mode = _resolve_system_mode(
         state.state,
         actively_cooling=actively_cooling,
+        actively_heating=actively_heating,
         system_modes=system_modes,
     )
 
@@ -240,7 +301,7 @@ def _build_zone_from_state(
     )
     target_temp = _parse_float(raw_target, current_temp)
 
-    return HeatingZoneData(
+    zone = HeatingZoneData(
         id=entity_id,
         name=name,
         current_temperature=current_temp,
@@ -258,6 +319,22 @@ def _build_zone_from_state(
         fan_mode=_parse_non_empty_str(attrs.get(ATTR_FAN_MODE)),
         fan_modes=_parse_str_list(attrs.get(ATTR_FAN_MODES)),
     )
+    return _apply_pending_command(zone, pending)
+
+
+def _get_active_pending_commands(
+    entry: TewkeConfigEntry,
+) -> dict[str, PendingZoneCommand]:
+    """Return unexpired pending Tap commands for the entry."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    raw = getattr(runtime_data, "pending_heating_commands", None)
+    if not isinstance(raw, dict):
+        return {}
+    now = time.monotonic()
+    expired = [zid for zid, cmd in raw.items() if cmd.expires_at <= now]
+    for zid in expired:
+        raw.pop(zid, None)
+    return raw
 
 
 def build_heating_zones(
@@ -270,14 +347,143 @@ def build_heating_zones(
         return {}
 
     primary_entity = _resolve_primary_entity(hass, entry, climate_entities)
+    pending_map = _get_active_pending_commands(entry)
     return {
         entity_id: _build_zone_from_state(
             entity_id,
             hass.states.get(entity_id),
             is_this_room=entity_id == primary_entity,
+            pending=pending_map.get(entity_id),
         )
         for entity_id in climate_entities
     }
+
+
+def _adopt_tap_zones_if_unconfigured(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+) -> list[str]:
+    """Adopt active heating zones already present on the Tap on initial startup."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    if runtime_data is None or getattr(
+        runtime_data, "initial_heating_sync_done", False
+    ):
+        return []
+    coordinator = getattr(runtime_data, "coordinator", None)
+    coord_data = getattr(coordinator, "data", None)
+    if not isinstance(coord_data, Mapping):
+        return []
+    tap_heating: HeatingData | None = coord_data.get("heating")
+    if tap_heating is None or not tap_heating.active or not tap_heating.zones:
+        return []
+
+    valid_entities = [
+        zid for zid in tap_heating.zones if hass.states.get(zid) is not None
+    ]
+    if not valid_entities:
+        return []
+
+    primary_id = next(
+        (
+            z.id
+            for z in tap_heating.zones.values()
+            if z.is_this_room and z.id in valid_entities
+        ),
+        valid_entities[0],
+    )
+    LOGGER.info(
+        "Adopting active climate entities from Tap %s: %s (primary=%s)",
+        entry.entry_id,
+        valid_entities,
+        primary_id,
+    )
+    if hasattr(hass, "config_entries") and hasattr(
+        hass.config_entries, "async_update_entry"
+    ):
+        new_options = {
+            **entry.options,
+            CONF_CLIMATE_ENTITIES: valid_entities,
+            CONF_PRIMARY_CLIMATE_ENTITY: primary_id,
+        }
+        hass.config_entries.async_update_entry(entry, options=new_options)
+    return valid_entities
+
+
+def _record_pending_command(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    command: HeatingCommandData,
+) -> None:
+    """Record a Tap command so stale HA states do not echo back during execution."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    pending_map = getattr(runtime_data, "pending_heating_commands", None)
+    if not isinstance(pending_map, dict):
+        return
+
+    current_zone = _build_zone_from_state(
+        command.zone_id,
+        hass.states.get(command.zone_id),
+        is_this_room=False,
+    )
+    existing = pending_map.get(command.zone_id)
+    pending_map[command.zone_id] = PendingZoneCommand(
+        expires_at=time.monotonic() + _COMMAND_GRACE_SECS,
+        system_mode=command.system_mode
+        if command.system_mode is not None
+        else (existing.system_mode if existing else None),
+        prev_system_mode=current_zone.system_mode
+        if command.system_mode is not None
+        else (existing.prev_system_mode if existing else None),
+        target_temperature=command.target_temperature
+        if command.target_temperature is not None
+        else (existing.target_temperature if existing else None),
+        prev_target_temperature=current_zone.target_temperature
+        if command.target_temperature is not None
+        else (existing.prev_target_temperature if existing else None),
+        preset_mode=command.preset_mode
+        if command.preset_mode is not None
+        else (existing.preset_mode if existing else None),
+        prev_preset_mode=current_zone.preset_mode
+        if command.preset_mode is not None
+        else (existing.prev_preset_mode if existing else None),
+        fan_mode=command.fan_mode
+        if command.fan_mode is not None
+        else (existing.fan_mode if existing else None),
+        prev_fan_mode=current_zone.fan_mode
+        if command.fan_mode is not None
+        else (existing.prev_fan_mode if existing else None),
+    )
+
+
+def _schedule_reconcile_push(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+) -> None:
+    """Schedule a post-command reconciliation push once the grace period ends."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    if runtime_data is None:
+        return
+    prev_unsub: Callable[[], None] | None = getattr(
+        runtime_data, "heating_reconcile_unsub", None
+    )
+    if prev_unsub is not None:
+        prev_unsub()
+        runtime_data.heating_reconcile_unsub = None
+
+    if not hasattr(hass, "loop"):
+        return
+
+    @callback
+    def _on_reconcile(_now: datetime) -> None:
+        runtime_data.heating_reconcile_unsub = None
+        hass.async_create_task(async_push_heating_state(hass, entry))
+
+    try:
+        runtime_data.heating_reconcile_unsub = async_call_later(
+            hass, _COMMAND_GRACE_SECS + 0.1, _on_reconcile
+        )
+    except Exception:  # noqa: BLE001
+        LOGGER.debug("Skipping delayed heating reconcile timer", exc_info=True)
 
 
 async def async_push_heating_state(
@@ -293,6 +499,10 @@ async def async_push_heating_state(
         return None
 
     climate_entities = get_configured_climate_entities(entry)
+    if not climate_entities:
+        climate_entities = _adopt_tap_zones_if_unconfigured(hass, entry)
+    entry.runtime_data.initial_heating_sync_done = True
+
     try:
         if not climate_entities:
             updated = await tap.clear_heating()
@@ -309,6 +519,27 @@ async def async_push_heating_state(
     return updated
 
 
+async def _async_call_climate_service(
+    hass: HomeAssistant,
+    service: str,
+    data: dict[str, Any],
+) -> None:
+    """Call a single Home Assistant climate service, logging any error."""
+    try:
+        await hass.services.async_call(
+            CLIMATE_DOMAIN,
+            service,
+            data,
+            blocking=True,
+        )
+    except Exception:  # noqa: BLE001
+        LOGGER.exception(
+            "Failed to call climate.%s with %s",
+            service,
+            data,
+        )
+
+
 async def async_handle_heating_command(
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
@@ -323,52 +554,59 @@ async def async_handle_heating_command(
         )
         return
 
+    runtime_data = getattr(entry, "runtime_data", None)
+    _record_pending_command(hass, entry, command)
+    if runtime_data is not None and hasattr(runtime_data, "heating_commands_in_flight"):
+        runtime_data.heating_commands_in_flight += 1
+
     try:
         if command.system_mode is not None:
-            await hass.services.async_call(
-                CLIMATE_DOMAIN,
+            await _async_call_climate_service(
+                hass,
                 SERVICE_SET_HVAC_MODE,
                 {
                     ATTR_ENTITY_ID: command.zone_id,
                     ATTR_HVAC_MODE: command.system_mode,
                 },
-                blocking=True,
             )
-        if command.target_temperature is not None:
-            await hass.services.async_call(
-                CLIMATE_DOMAIN,
+        if command.target_temperature is not None and command.system_mode not in (
+            HVACMode.OFF,
+            HVACMode.FAN_ONLY,
+        ):
+            await _async_call_climate_service(
+                hass,
                 SERVICE_SET_TEMPERATURE,
                 {
                     ATTR_ENTITY_ID: command.zone_id,
                     ATTR_TEMPERATURE: command.target_temperature,
                 },
-                blocking=True,
             )
         if command.preset_mode is not None:
-            await hass.services.async_call(
-                CLIMATE_DOMAIN,
+            await _async_call_climate_service(
+                hass,
                 SERVICE_SET_PRESET_MODE,
                 {
                     ATTR_ENTITY_ID: command.zone_id,
                     ATTR_PRESET_MODE: command.preset_mode,
                 },
-                blocking=True,
             )
         if command.fan_mode is not None:
-            await hass.services.async_call(
-                CLIMATE_DOMAIN,
+            await _async_call_climate_service(
+                hass,
                 SERVICE_SET_FAN_MODE,
                 {
                     ATTR_ENTITY_ID: command.zone_id,
                     ATTR_FAN_MODE: command.fan_mode,
                 },
-                blocking=True,
             )
-    except Exception:  # noqa: BLE001
-        LOGGER.exception(
-            "Failed to apply Tap heating command for %s",
-            command.zone_id,
-        )
+    finally:
+        if runtime_data is not None and hasattr(
+            runtime_data, "heating_commands_in_flight"
+        ):
+            runtime_data.heating_commands_in_flight = max(
+                0, runtime_data.heating_commands_in_flight - 1
+            )
+        _schedule_reconcile_push(hass, entry)
 
 
 def cancel_climate_state_listener(entry: TewkeConfigEntry) -> None:
@@ -380,6 +618,12 @@ def cancel_climate_state_listener(entry: TewkeConfigEntry) -> None:
     if unsub is not None:
         unsub()
         runtime_data.climate_unsub = None
+    reconcile_unsub: Callable[[], None] | None = getattr(
+        runtime_data, "heating_reconcile_unsub", None
+    )
+    if reconcile_unsub is not None:
+        reconcile_unsub()
+        runtime_data.heating_reconcile_unsub = None
 
 
 @callback
@@ -398,6 +642,9 @@ def async_setup_climate_state_listener(
         return
 
     climate_entities = get_configured_climate_entities(entry)
+    if not climate_entities:
+        climate_entities = _adopt_tap_zones_if_unconfigured(hass, entry)
+
     hass.async_create_task(async_push_heating_state(hass, entry))
 
     if not climate_entities:
@@ -407,6 +654,8 @@ def async_setup_climate_state_listener(
     def _async_on_climate_state_change(
         _event: Event[EventStateChangedData],
     ) -> None:
+        if getattr(runtime_data, "heating_commands_in_flight", 0) > 0:
+            return
         hass.async_create_task(async_push_heating_state(hass, entry))
 
     entry.runtime_data.climate_unsub = async_track_state_change_event(

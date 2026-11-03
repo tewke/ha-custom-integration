@@ -374,8 +374,8 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         )
         added: list[object] = []
         listeners: list[object] = []
-        coordinator.async_add_listener = lambda cb: listeners.append(cb) or (
-            lambda: None
+        coordinator.async_add_listener = lambda cb: (
+            listeners.append(cb) or (lambda: None)
         )
 
         await async_setup_sensor_entry(
@@ -524,9 +524,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         entry.data = {"scene_control_types": {"s1": "light"}}
         options_flow = TewkeOptionsFlow()
         options_flow.hass = hass
-        with patch.object(
-            TewkeOptionsFlow, "config_entry", new=entry
-        ):
+        with patch.object(TewkeOptionsFlow, "config_entry", new=entry):
             res = await options_flow.async_step_init()
             assert res["type"] == "abort"
             assert res["reason"] == "no_fan_scenes"
@@ -536,17 +534,19 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         hass = MagicMock()
         hass.services.async_call = AsyncMock()
         lr_state = SimpleNamespace(
-            state="heat",
+            state="cool",
             attributes={
                 "friendly_name": "Living Room Thermostat",
-                "current_temperature": 20.5,
-                "temperature": 22.0,
-                "hvac_action": "heating",
+                "current_temperature": 24.5,
+                "temperature": 21.0,
+                "hvac_action": "cooling",
                 "hvac_modes": ["heat", "cool", "auto", "off"],
                 "min_temp": 7.0,
                 "max_temp": 30.0,
                 "preset_mode": "comfort",
                 "preset_modes": ["none", "eco", "comfort", "boost"],
+                "fan_mode": "auto",
+                "fan_modes": ["auto", "low", "medium", "high"],
             },
         )
         br_state = SimpleNamespace(
@@ -575,14 +575,19 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         zones = build_heating_zones(hass, entry)
         assert len(zones) == 2
         assert zones["climate.living_room"].name == "Living Room Thermostat"
-        assert zones["climate.living_room"].current_temperature == 20.5
-        assert zones["climate.living_room"].target_temperature == 22.0
-        assert zones["climate.living_room"].system_mode == "heat"
-        assert zones["climate.living_room"].actively_heating
+        assert zones["climate.living_room"].current_temperature == 24.5
+        assert zones["climate.living_room"].target_temperature == 21.0
+        assert zones["climate.living_room"].system_mode == "cool"
+        assert not zones["climate.living_room"].actively_heating
+        assert zones["climate.living_room"].actively_cooling
         assert zones["climate.living_room"].is_this_room
         assert zones["climate.living_room"].min_temp == 7.0
         assert zones["climate.living_room"].max_temp == 30.0
-        assert zones["climate.living_room"].system_modes == ["heat", "off"]
+        assert zones["climate.living_room"].system_modes == [
+            "heat",
+            "cool",
+            "off",
+        ]
         assert zones["climate.living_room"].preset_mode == "comfort"
         assert zones["climate.living_room"].preset_modes == [
             "none",
@@ -590,13 +595,19 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             "comfort",
             "boost",
         ]
+        assert zones["climate.living_room"].fan_mode == "auto"
+        assert zones["climate.living_room"].fan_modes == [
+            "auto",
+            "low",
+            "medium",
+            "high",
+        ]
 
         assert zones["climate.bedroom"].system_mode == "off"
         assert zones["climate.bedroom"].system_modes == ["heat"]
         assert not zones["climate.bedroom"].actively_heating
+        assert not zones["climate.bedroom"].actively_cooling
         assert not zones["climate.bedroom"].is_this_room
-        assert zones["climate.bedroom"].preset_mode is None
-        assert zones["climate.bedroom"].preset_modes == []
 
         mock_tap = MagicMock()
         mock_tap.resources = {"heating": MagicMock()}
@@ -617,31 +628,38 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         assert pushed.active
         mock_tap.set_heating.assert_awaited_once_with(zones, active=True)
 
-        # Command from Tap triggers set_hvac_mode, set_temperature, set_preset_mode
+        # Command from Tap triggers climate service calls
         cmd = HeatingCommandData(
             zone_id="climate.living_room",
-            target_temperature=23.5,
-            system_mode="heat",
+            target_temperature=19.5,
+            system_mode="cool",
             preset_mode="boost",
+            fan_mode="high",
         )
         await async_handle_heating_command(hass, entry, cmd)
-        assert hass.services.async_call.await_count == 3
+        assert hass.services.async_call.await_count == 4
         hass.services.async_call.assert_any_await(
             "climate",
             "set_hvac_mode",
-            {"entity_id": "climate.living_room", "hvac_mode": "heat"},
+            {"entity_id": "climate.living_room", "hvac_mode": "cool"},
             blocking=True,
         )
         hass.services.async_call.assert_any_await(
             "climate",
             "set_temperature",
-            {"entity_id": "climate.living_room", "temperature": 23.5},
+            {"entity_id": "climate.living_room", "temperature": 19.5},
             blocking=True,
         )
         hass.services.async_call.assert_any_await(
             "climate",
             "set_preset_mode",
             {"entity_id": "climate.living_room", "preset_mode": "boost"},
+            blocking=True,
+        )
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_fan_mode",
+            {"entity_id": "climate.living_room", "fan_mode": "high"},
             blocking=True,
         )
 
@@ -681,9 +699,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         create_res = await flow.async_step_confirmation({})
         assert create_res["type"] == "create_entry"
         assert create_res["data"][CONF_CLIMATE_ENTITIES] == ["climate.living_room"]
-        assert (
-            create_res["data"][CONF_PRIMARY_CLIMATE_ENTITY] == "climate.living_room"
-        )
+        assert create_res["data"][CONF_PRIMARY_CLIMATE_ENTITY] == "climate.living_room"
 
     async def test_reconfigure_flow_updates_climate_entities(self) -> None:
         """Verify reconfigure flow allows changing and saving climate entities."""
@@ -722,9 +738,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         abort_res = await flow.async_step_confirmation({})
         assert abort_res["reason"] == "reconfigure_successful"
         updated_data = flow.async_update_reload_and_abort.call_args.kwargs["data"]
-        updated_options = flow.async_update_reload_and_abort.call_args.kwargs[
-            "options"
-        ]
+        updated_options = flow.async_update_reload_and_abort.call_args.kwargs["options"]
         assert updated_data[CONF_CLIMATE_ENTITIES] == [
             "climate.bedroom",
             "climate.kitchen",

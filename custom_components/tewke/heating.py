@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from homeassistant.components.climate import (
     ATTR_CURRENT_TEMPERATURE,
+    ATTR_FAN_MODE,
+    ATTR_FAN_MODES,
     ATTR_HVAC_ACTION,
     ATTR_HVAC_MODE,
     ATTR_HVAC_MODES,
@@ -14,6 +16,9 @@ from homeassistant.components.climate import (
     ATTR_MIN_TEMP,
     ATTR_PRESET_MODE,
     ATTR_PRESET_MODES,
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
+    SERVICE_SET_FAN_MODE,
     SERVICE_SET_HVAC_MODE,
     SERVICE_SET_PRESET_MODE,
     SERVICE_SET_TEMPERATURE,
@@ -50,7 +55,12 @@ if TYPE_CHECKING:
 _DEFAULT_TEMP = 20.0
 _DEFAULT_MIN_TEMP = 5.0
 _DEFAULT_MAX_TEMP = 35.0
-_SUPPORTED_SYSTEM_MODES: tuple[str, ...] = (HVACMode.HEAT, HVACMode.OFF)
+_SUPPORTED_SYSTEM_MODES: tuple[str, ...] = (
+    HVACMode.HEAT,
+    HVACMode.COOL,
+    HVACMode.OFF,
+)
+_DEFAULT_SYSTEM_MODES: tuple[str, ...] = (HVACMode.HEAT, HVACMode.OFF)
 
 
 def tap_supports_heating(tap: object) -> bool:
@@ -121,6 +131,129 @@ def _resolve_primary_entity(
     return climate_entities[0]
 
 
+def _parse_float(raw: Any, default: float) -> float:
+    """Convert raw attribute value to float, falling back to default."""
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except TypeError, ValueError:
+        return default
+
+
+def _parse_non_empty_str(raw: Any) -> str | None:
+    """Return stripped non-empty string or None."""
+    return str(raw) if isinstance(raw, str) and raw else None
+
+
+def _parse_str_list(raw: Any) -> list[str]:
+    """Return a list of non-empty strings from a raw attribute list."""
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if isinstance(item, str) and item]
+
+
+def _resolve_system_modes(raw_hvac_modes: Any) -> list[str]:
+    """Filter HA hvac_modes to supported Tewke system modes."""
+    if not isinstance(raw_hvac_modes, list):
+        return list(_DEFAULT_SYSTEM_MODES)
+    modes: list[str] = []
+    for mode in raw_hvac_modes:
+        mode_str = str(mode)
+        if mode_str in _SUPPORTED_SYSTEM_MODES and mode_str not in modes:
+            modes.append(mode_str)
+    return modes or list(_DEFAULT_SYSTEM_MODES)
+
+
+def _resolve_system_mode(
+    state_str: str,
+    *,
+    actively_cooling: bool,
+    system_modes: list[str],
+) -> Literal["heat", "cool", "off"]:
+    """Map an HA climate state string to a Tewke system mode."""
+    if state_str == HVACMode.OFF:
+        return "off"
+    if state_str == HVACMode.COOL:
+        return "cool"
+    if state_str != HVACMode.HEAT and (
+        actively_cooling
+        or (HVACMode.COOL in system_modes and HVACMode.HEAT not in system_modes)
+    ):
+        return "cool"
+    return "heat"
+
+
+def _build_zone_from_state(
+    entity_id: str,
+    state: Any,
+    *,
+    is_this_room: bool,
+) -> HeatingZoneData:
+    """Build a single `HeatingZoneData` from an HA climate state object."""
+    if state is None:
+        return HeatingZoneData(
+            id=entity_id,
+            name=entity_id,
+            current_temperature=_DEFAULT_TEMP,
+            target_temperature=_DEFAULT_TEMP,
+            system_mode="off",
+            actively_heating=False,
+            actively_cooling=False,
+            online=False,
+            is_this_room=is_this_room,
+            min_temp=_DEFAULT_MIN_TEMP,
+            max_temp=_DEFAULT_MAX_TEMP,
+        )
+
+    online = state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+    attrs = state.attributes
+    name = str(attrs.get(ATTR_FRIENDLY_NAME) or entity_id)
+    system_modes = _resolve_system_modes(attrs.get(ATTR_HVAC_MODES))
+
+    hvac_action = attrs.get(ATTR_HVAC_ACTION)
+    actively_heating = bool(hvac_action == HVACAction.HEATING)
+    actively_cooling = bool(hvac_action == HVACAction.COOLING)
+    system_mode = _resolve_system_mode(
+        state.state,
+        actively_cooling=actively_cooling,
+        system_modes=system_modes,
+    )
+
+    raw_target = attrs.get(ATTR_TEMPERATURE)
+    if raw_target is None:
+        raw_target = (
+            attrs.get(ATTR_TARGET_TEMP_HIGH)
+            if system_mode == "cool"
+            else attrs.get(ATTR_TARGET_TEMP_LOW)
+        )
+    raw_current = attrs.get(ATTR_CURRENT_TEMPERATURE)
+    current_temp = _parse_float(
+        raw_current if raw_current is not None else raw_target,
+        _DEFAULT_TEMP,
+    )
+    target_temp = _parse_float(raw_target, current_temp)
+
+    return HeatingZoneData(
+        id=entity_id,
+        name=name,
+        current_temperature=current_temp,
+        target_temperature=target_temp,
+        system_mode=system_mode,
+        actively_heating=actively_heating,
+        actively_cooling=actively_cooling,
+        online=online,
+        is_this_room=is_this_room,
+        min_temp=_parse_float(attrs.get(ATTR_MIN_TEMP), _DEFAULT_MIN_TEMP),
+        max_temp=_parse_float(attrs.get(ATTR_MAX_TEMP), _DEFAULT_MAX_TEMP),
+        system_modes=system_modes,
+        preset_mode=_parse_non_empty_str(attrs.get(ATTR_PRESET_MODE)),
+        preset_modes=_parse_str_list(attrs.get(ATTR_PRESET_MODES)),
+        fan_mode=_parse_non_empty_str(attrs.get(ATTR_FAN_MODE)),
+        fan_modes=_parse_str_list(attrs.get(ATTR_FAN_MODES)),
+    )
+
+
 def build_heating_zones(
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
@@ -131,109 +264,14 @@ def build_heating_zones(
         return {}
 
     primary_entity = _resolve_primary_entity(hass, entry, climate_entities)
-    zones: dict[str, HeatingZoneData] = {}
-
-    for entity_id in climate_entities:
-        state = hass.states.get(entity_id)
-        is_this_room = entity_id == primary_entity
-
-        if state is None:
-            zones[entity_id] = HeatingZoneData(
-                id=entity_id,
-                name=entity_id,
-                current_temperature=_DEFAULT_TEMP,
-                target_temperature=_DEFAULT_TEMP,
-                system_mode="off",
-                actively_heating=False,
-                online=False,
-                is_this_room=is_this_room,
-                min_temp=_DEFAULT_MIN_TEMP,
-                max_temp=_DEFAULT_MAX_TEMP,
-            )
-            continue
-
-        online = state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
-        attrs = state.attributes
-        name = str(attrs.get(ATTR_FRIENDLY_NAME) or entity_id)
-
-        raw_current = attrs.get(ATTR_CURRENT_TEMPERATURE)
-        raw_target = attrs.get(ATTR_TEMPERATURE)
-
-        try:
-            current_temp = float(
-                raw_current
-                if raw_current is not None
-                else (raw_target if raw_target is not None else _DEFAULT_TEMP)
-            )
-        except (TypeError, ValueError):
-            current_temp = _DEFAULT_TEMP
-
-        try:
-            target_temp = float(
-                raw_target if raw_target is not None else current_temp
-            )
-        except (TypeError, ValueError):
-            target_temp = current_temp
-
-        system_mode: Literal["heat", "off"] = (
-            "off" if state.state == HVACMode.OFF else "heat"
+    return {
+        entity_id: _build_zone_from_state(
+            entity_id,
+            hass.states.get(entity_id),
+            is_this_room=entity_id == primary_entity,
         )
-        hvac_action = attrs.get(ATTR_HVAC_ACTION)
-        actively_heating = bool(hvac_action == HVACAction.HEATING)
-
-        try:
-            min_temp = float(attrs.get(ATTR_MIN_TEMP, _DEFAULT_MIN_TEMP))
-        except (TypeError, ValueError):
-            min_temp = _DEFAULT_MIN_TEMP
-
-        try:
-            max_temp = float(attrs.get(ATTR_MAX_TEMP, _DEFAULT_MAX_TEMP))
-        except (TypeError, ValueError):
-            max_temp = _DEFAULT_MAX_TEMP
-
-        raw_hvac_modes = attrs.get(ATTR_HVAC_MODES)
-        system_modes: list[str] = []
-        if isinstance(raw_hvac_modes, list):
-            for mode in raw_hvac_modes:
-                mode_str = str(mode)
-                if (
-                    mode_str in _SUPPORTED_SYSTEM_MODES
-                    and mode_str not in system_modes
-                ):
-                    system_modes.append(mode_str)
-        if not system_modes:
-            system_modes = list(_SUPPORTED_SYSTEM_MODES)
-
-        raw_preset_mode = attrs.get(ATTR_PRESET_MODE)
-        preset_mode = (
-            str(raw_preset_mode)
-            if isinstance(raw_preset_mode, str) and raw_preset_mode
-            else None
-        )
-        raw_preset_modes = attrs.get(ATTR_PRESET_MODES)
-        preset_modes = (
-            [str(p) for p in raw_preset_modes if isinstance(p, str) and p]
-            if isinstance(raw_preset_modes, list)
-            else []
-        )
-
-        zones[entity_id] = HeatingZoneData(
-            id=entity_id,
-            name=name,
-            current_temperature=current_temp,
-            target_temperature=target_temp,
-            system_mode=system_mode,
-            actively_heating=actively_heating,
-            online=online,
-            is_this_room=is_this_room,
-            min_temp=min_temp,
-            max_temp=max_temp,
-            system_modes=system_modes,
-            preset_mode=preset_mode,
-            preset_modes=preset_modes,
-        )
-
-    return zones
+        for entity_id in climate_entities
+    }
 
 
 async def async_push_heating_state(
@@ -307,6 +345,16 @@ async def async_handle_heating_command(
                 {
                     ATTR_ENTITY_ID: command.zone_id,
                     ATTR_PRESET_MODE: command.preset_mode,
+                },
+                blocking=True,
+            )
+        if command.fan_mode is not None:
+            await hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_FAN_MODE,
+                {
+                    ATTR_ENTITY_ID: command.zone_id,
+                    ATTR_FAN_MODE: command.fan_mode,
                 },
                 blocking=True,
             )

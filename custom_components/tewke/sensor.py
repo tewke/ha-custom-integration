@@ -22,6 +22,7 @@ from homeassistant.const import (
     CONCENTRATION_PARTS_PER_MILLION,
     LIGHT_LUX,
     PERCENTAGE,
+    EntityCategory,
     UnitOfPower,
     UnitOfPressure,
     UnitOfTemperature,
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
 
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
-    from pytewke.data import EnergyData, RadarData, SensorData
+    from pytewke.data import ConfigData, EnergyData, RadarData, SensorData
 
     from .coordinator import TewkeCoordinator
     from .data import TewkeConfigEntry
@@ -156,6 +157,19 @@ SENSOR_DESCRIPTIONS: tuple[TewkeSensorEntityDescription, ...] = (
 )
 
 
+def _has_update_status(config: ConfigData | None) -> bool:
+    """Return True if ConfigData carries a non-null software update status."""
+    return config is not None and getattr(config, "update_status", None) is not None
+
+
+def _extract_update_status(config: ConfigData) -> str | None:
+    """Return the software update status string from ConfigData, if available."""
+    status = getattr(config, "update_status", None)
+    if status is None:
+        return None
+    return status.value if hasattr(status, "value") else str(status)
+
+
 async def async_setup_entry(
     _hass: HomeAssistant,
     entry: TewkeConfigEntry,
@@ -163,10 +177,13 @@ async def async_setup_entry(
 ) -> None:
     """Set up Tewke sensor entities from a config entry."""
     coordinator = entry.runtime_data.coordinator
-    entities: list[TewkeSensor | TewkeRadarSensor | TewkeEnergySensor] = []
+    entities: list[
+        TewkeSensor | TewkeRadarSensor | TewkeEnergySensor | TewkeConfigSensor
+    ] = []
     added_sensors = False
     added_radar = False
     added_energy = False
+    added_update_status = False
 
     if coordinator.data.get("sensors") is not None:
         added_sensors = True
@@ -189,15 +206,24 @@ async def async_setup_entry(
             for description in ENERGY_SENSOR_DESCRIPTIONS
         )
 
+    if _has_update_status(coordinator.data.get("config")):
+        added_update_status = True
+        entities.extend(
+            TewkeConfigSensor(coordinator=coordinator, description=description)
+            for description in CONFIG_SENSOR_DESCRIPTIONS
+        )
+
     if entities:
         async_add_entities(entities)
 
     @callback
     def _async_check_late_sensors() -> None:
-        nonlocal added_sensors, added_radar, added_energy
+        nonlocal added_sensors, added_radar, added_energy, added_update_status
         if not coordinator.data:
             return
-        new_entities: list[TewkeSensor | TewkeRadarSensor | TewkeEnergySensor] = []
+        new_entities: list[
+            TewkeSensor | TewkeRadarSensor | TewkeEnergySensor | TewkeConfigSensor
+        ] = []
         if not added_sensors and coordinator.data.get("sensors") is not None:
             added_sensors = True
             new_entities.extend(
@@ -216,10 +242,18 @@ async def async_setup_entry(
                 TewkeEnergySensor(coordinator=coordinator, description=description)
                 for description in ENERGY_SENSOR_DESCRIPTIONS
             )
+        if not added_update_status and _has_update_status(
+            coordinator.data.get("config")
+        ):
+            added_update_status = True
+            new_entities.extend(
+                TewkeConfigSensor(coordinator=coordinator, description=description)
+                for description in CONFIG_SENSOR_DESCRIPTIONS
+            )
         if new_entities:
             async_add_entities(new_entities)
 
-    if not (added_sensors and added_radar and added_energy):
+    if not (added_sensors and added_radar and added_energy and added_update_status):
         entry.async_on_unload(coordinator.async_add_listener(_async_check_late_sensors))
 
 
@@ -369,3 +403,59 @@ class TewkeEnergySensor(TewkeEntity, SensorEntity):
         if energy is None:
             return None
         return self.entity_description.value_fn(energy)
+
+
+@dataclass(frozen=True, kw_only=True)
+class TewkeConfigSensorEntityDescription(SensorEntityDescription):
+    """Describes a Tewke config-derived diagnostic sensor entity."""
+
+    value_fn: Callable[[ConfigData], str | None]
+
+
+UPDATE_STATUS_OPTIONS: list[str] = [
+    "idle",
+    "pending_download",
+    "downloading",
+    "pending_install",
+    "installing",
+    "pending_reboot",
+    "post_reboot_checks",
+    "complete",
+    "failed",
+    "cancelled",
+]
+
+CONFIG_SENSOR_DESCRIPTIONS: tuple[TewkeConfigSensorEntityDescription, ...] = (
+    TewkeConfigSensorEntityDescription(
+        key="update_status",
+        name="Software Update Status",
+        device_class=SensorDeviceClass.ENUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        options=UPDATE_STATUS_OPTIONS,
+        value_fn=_extract_update_status,
+    ),
+)
+
+
+class TewkeConfigSensor(TewkeEntity, SensorEntity):
+    """A Tewke config-derived diagnostic sensor entity."""
+
+    entity_description: TewkeConfigSensorEntityDescription
+
+    def __init__(
+        self,
+        coordinator: TewkeCoordinator,
+        description: TewkeConfigSensorEntityDescription,
+    ) -> None:
+        """Initialise the config sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{self._hardware_id}_{description.key}"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the sensor reading."""
+        config: ConfigData | None = self.coordinator.data.get("config")
+        if config is None:
+            return None
+        return self.entity_description.value_fn(config)

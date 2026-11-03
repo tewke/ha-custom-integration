@@ -9,9 +9,13 @@ from homeassistant.components.climate import (
     ATTR_CURRENT_TEMPERATURE,
     ATTR_HVAC_ACTION,
     ATTR_HVAC_MODE,
+    ATTR_HVAC_MODES,
     ATTR_MAX_TEMP,
     ATTR_MIN_TEMP,
-     SERVICE_SET_HVAC_MODE,
+    ATTR_PRESET_MODE,
+    ATTR_PRESET_MODES,
+    SERVICE_SET_HVAC_MODE,
+    SERVICE_SET_PRESET_MODE,
     SERVICE_SET_TEMPERATURE,
     HVACAction,
     HVACMode,
@@ -46,6 +50,7 @@ if TYPE_CHECKING:
 _DEFAULT_TEMP = 20.0
 _DEFAULT_MIN_TEMP = 5.0
 _DEFAULT_MAX_TEMP = 35.0
+_SUPPORTED_SYSTEM_MODES: tuple[str, ...] = (HVACMode.HEAT, HVACMode.OFF)
 
 
 def tap_supports_heating(tap: object) -> bool:
@@ -186,6 +191,32 @@ def build_heating_zones(
         except (TypeError, ValueError):
             max_temp = _DEFAULT_MAX_TEMP
 
+        raw_hvac_modes = attrs.get(ATTR_HVAC_MODES)
+        system_modes: list[str] = []
+        if isinstance(raw_hvac_modes, list):
+            for mode in raw_hvac_modes:
+                mode_str = str(mode)
+                if (
+                    mode_str in _SUPPORTED_SYSTEM_MODES
+                    and mode_str not in system_modes
+                ):
+                    system_modes.append(mode_str)
+        if not system_modes:
+            system_modes = list(_SUPPORTED_SYSTEM_MODES)
+
+        raw_preset_mode = attrs.get(ATTR_PRESET_MODE)
+        preset_mode = (
+            str(raw_preset_mode)
+            if isinstance(raw_preset_mode, str) and raw_preset_mode
+            else None
+        )
+        raw_preset_modes = attrs.get(ATTR_PRESET_MODES)
+        preset_modes = (
+            [str(p) for p in raw_preset_modes if isinstance(p, str) and p]
+            if isinstance(raw_preset_modes, list)
+            else []
+        )
+
         zones[entity_id] = HeatingZoneData(
             id=entity_id,
             name=name,
@@ -197,6 +228,9 @@ def build_heating_zones(
             is_this_room=is_this_room,
             min_temp=min_temp,
             max_temp=max_temp,
+            system_modes=system_modes,
+            preset_mode=preset_mode,
+            preset_modes=preset_modes,
         )
 
     return zones
@@ -263,6 +297,16 @@ async def async_handle_heating_command(
                 {
                     ATTR_ENTITY_ID: command.zone_id,
                     ATTR_TEMPERATURE: command.target_temperature,
+                },
+                blocking=True,
+            )
+        if command.preset_mode is not None:
+            await hass.services.async_call(
+                CLIMATE_DOMAIN,
+                SERVICE_SET_PRESET_MODE,
+                {
+                    ATTR_ENTITY_ID: command.zone_id,
+                    ATTR_PRESET_MODE: command.preset_mode,
                 },
                 blocking=True,
             )

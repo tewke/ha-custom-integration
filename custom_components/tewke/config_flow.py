@@ -356,12 +356,32 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             )
             raw_primary = user_input.get(CONF_PRIMARY_CLIMATE_ENTITY)
             self._primary_climate_entity = (
-                raw_primary if isinstance(raw_primary, str) and raw_primary else None
+                raw_primary
+                if isinstance(raw_primary, str)
+                and raw_primary
+                and raw_primary in self._climate_entities
+                else None
             )
             return await self.async_step_confirmation()
 
         existing_entities: list[str] = getattr(self, "_climate_entities", [])
         existing_primary: str | None = getattr(self, "_primary_climate_entity", None)
+
+        if not existing_entities and self._tap is not None:
+            try:
+                tap_heating = await self._tap.get_heating()
+                if tap_heating.active and tap_heating.zones:
+                    existing_entities = list(tap_heating.zones.keys())
+                    existing_primary = next(
+                        (
+                            z.id
+                            for z in tap_heating.zones.values()
+                            if z.is_this_room
+                        ),
+                        None,
+                    )
+            except (BasePyTewkeError, TimeoutError):
+                LOGGER.debug("Unable to read existing heating state from Tap")
 
         schema_fields: dict[Any, Any] = {
             vol.Optional(
@@ -473,15 +493,18 @@ class TewkeOptionsFlow(OptionsFlow):
                 }
             if supports_heating:
                 raw_entities = user_input.get(CONF_CLIMATE_ENTITIES) or []
-                options_data[CONF_CLIMATE_ENTITIES] = (
+                cleaned_entities = (
                     [str(e) for e in raw_entities if isinstance(e, str)]
                     if isinstance(raw_entities, list)
                     else []
                 )
+                options_data[CONF_CLIMATE_ENTITIES] = cleaned_entities
                 raw_primary = user_input.get(CONF_PRIMARY_CLIMATE_ENTITY)
                 options_data[CONF_PRIMARY_CLIMATE_ENTITY] = (
                     raw_primary
-                    if isinstance(raw_primary, str) and raw_primary
+                    if isinstance(raw_primary, str)
+                    and raw_primary
+                    and raw_primary in cleaned_entities
                     else None
                 )
             return self.async_create_entry(data=options_data)

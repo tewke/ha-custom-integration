@@ -542,8 +542,11 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
                 "current_temperature": 20.5,
                 "temperature": 22.0,
                 "hvac_action": "heating",
+                "hvac_modes": ["heat", "cool", "auto", "off"],
                 "min_temp": 7.0,
                 "max_temp": 30.0,
+                "preset_mode": "comfort",
+                "preset_modes": ["none", "eco", "comfort", "boost"],
             },
         )
         br_state = SimpleNamespace(
@@ -553,6 +556,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
                 "current_temperature": 18.0,
                 "temperature": 19.0,
                 "hvac_action": "off",
+                "hvac_modes": ["heat"],
             },
         )
         states_map = {
@@ -578,10 +582,21 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         assert zones["climate.living_room"].is_this_room
         assert zones["climate.living_room"].min_temp == 7.0
         assert zones["climate.living_room"].max_temp == 30.0
+        assert zones["climate.living_room"].system_modes == ["heat", "off"]
+        assert zones["climate.living_room"].preset_mode == "comfort"
+        assert zones["climate.living_room"].preset_modes == [
+            "none",
+            "eco",
+            "comfort",
+            "boost",
+        ]
 
         assert zones["climate.bedroom"].system_mode == "off"
+        assert zones["climate.bedroom"].system_modes == ["heat"]
         assert not zones["climate.bedroom"].actively_heating
         assert not zones["climate.bedroom"].is_this_room
+        assert zones["climate.bedroom"].preset_mode is None
+        assert zones["climate.bedroom"].preset_modes == []
 
         mock_tap = MagicMock()
         mock_tap.resources = {"heating": MagicMock()}
@@ -602,14 +617,15 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         assert pushed.active
         mock_tap.set_heating.assert_awaited_once_with(zones, active=True)
 
-        # Command from Tap triggers climate.set_hvac_mode and climate.set_temperature
+        # Command from Tap triggers set_hvac_mode, set_temperature, set_preset_mode
         cmd = HeatingCommandData(
             zone_id="climate.living_room",
             target_temperature=23.5,
             system_mode="heat",
+            preset_mode="boost",
         )
         await async_handle_heating_command(hass, entry, cmd)
-        assert hass.services.async_call.await_count == 2
+        assert hass.services.async_call.await_count == 3
         hass.services.async_call.assert_any_await(
             "climate",
             "set_hvac_mode",
@@ -620,6 +636,12 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             "climate",
             "set_temperature",
             {"entity_id": "climate.living_room", "temperature": 23.5},
+            blocking=True,
+        )
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_preset_mode",
+            {"entity_id": "climate.living_room", "preset_mode": "boost"},
             blocking=True,
         )
 
@@ -634,6 +656,9 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         mock_tap = MagicMock()
         mock_tap.resources = {"heating": MagicMock()}
         mock_tap.get_scenes = AsyncMock(return_value={})
+        mock_tap.get_heating = AsyncMock(
+            return_value=HeatingData(active=False, zones={})
+        )
         mock_tap.close = AsyncMock()
         flow._tap = mock_tap
 
@@ -659,6 +684,54 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         assert (
             create_res["data"][CONF_PRIMARY_CLIMATE_ENTITY] == "climate.living_room"
         )
+
+    async def test_reconfigure_flow_updates_climate_entities(self) -> None:
+        """Verify reconfigure flow allows changing and saving climate entities."""
+        entry = _make_mock_entry()
+        entry.data[CONF_CLIMATE_ENTITIES] = ["climate.living_room"]
+        entry.data[CONF_PRIMARY_CLIMATE_ENTITY] = "climate.living_room"
+        entry.options = {
+            CONF_CLIMATE_ENTITIES: ["climate.old_option"],
+            CONF_PRIMARY_CLIMATE_ENTITY: "climate.old_option",
+        }
+
+        flow = TewkeConfigFlow()
+        flow.hass = MagicMock()
+        flow.context = {"source": "reconfigure", "entry_id": entry.entry_id}
+        flow._get_reconfigure_entry = MagicMock(return_value=entry)
+        flow.async_update_reload_and_abort = MagicMock(
+            return_value={"type": "abort", "reason": "reconfigure_successful"}
+        )
+
+        mock_tap = MagicMock()
+        mock_tap.resources = {"heating": MagicMock()}
+        mock_tap.get_scenes = AsyncMock(return_value={})
+        mock_tap.close = AsyncMock()
+        flow._tap = mock_tap
+
+        step_res = await flow.async_step_reconfigure()
+        assert step_res["type"] == "form"
+        assert step_res["step_id"] == "heating"
+
+        await flow.async_step_heating(
+            {
+                CONF_CLIMATE_ENTITIES: ["climate.bedroom", "climate.kitchen"],
+                CONF_PRIMARY_CLIMATE_ENTITY: "climate.bedroom",
+            }
+        )
+        abort_res = await flow.async_step_confirmation({})
+        assert abort_res["reason"] == "reconfigure_successful"
+        updated_data = flow.async_update_reload_and_abort.call_args.kwargs["data"]
+        updated_options = flow.async_update_reload_and_abort.call_args.kwargs[
+            "options"
+        ]
+        assert updated_data[CONF_CLIMATE_ENTITIES] == [
+            "climate.bedroom",
+            "climate.kitchen",
+        ]
+        assert updated_data[CONF_PRIMARY_CLIMATE_ENTITY] == "climate.bedroom"
+        assert CONF_CLIMATE_ENTITIES not in updated_options
+        assert CONF_PRIMARY_CLIMATE_ENTITY not in updated_options
 
 
 if __name__ == "__main__":

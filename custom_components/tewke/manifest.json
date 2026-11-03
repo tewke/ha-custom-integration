@@ -14,7 +14,7 @@
   ],
   "quality_scale": "bronze",
   "requirements": [
-    "pytewke==0.8.2"
+    "pytewke==0.8.3"
   ],
   "version": "0.2.1",
   "zeroconf": [

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14.2"
 
 [[package]]
@@ -903,7 +903,7 @@ wheels = [
 
 [[package]]
 name = "ha-custom-integration"
-version = "0.1.10"
+version = "0.2.1"
 source = { virtual = "." }
 dependencies = [
     { name = "colorlog" },
@@ -922,7 +922,7 @@ dev = [
 requires-dist = [
     { name = "colorlog", specifier = "==6.10.1" },
     { name = "homeassistant", specifier = "==2026.5.1" },
-    { name = "pytewke", specifier = "==0.6.1" },
+    { name = "pytewke", specifier = "==0.8.3" },
     { name = "voluptuous", specifier = ">=0.15.2" },
 ]
 
@@ -1684,16 +1684,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/08/64/a99f27d3b4347486c
 
 [[package]]
 name = "pytewke"
-version = "0.6.1"
+version = "0.8.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiocoap" },
     { name = "cbor2" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/75/85/765803e0886173db251f29d23b4882b62af59f84814e397c970598e2c206/pytewke-0.6.1.tar.gz", hash = "sha256:54e7461cec88294a0fbdf35acec0ef8bf96c6819607770bda4b23794dc9a3ab6", size = 17309568, upload-time = "2026-07-29T10:32:22.191Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/0c/ab7c8a3f4d41802c1ab9bafecdc73eccffa4c566ba0231518b1d71993ba1/pytewke-0.8.3.tar.gz", hash = "sha256:73ccd1174d1ee9842b719c4b2c12acf2830745005269ef9cd3d7ed4077b56fa6", size = 23322562, upload-time = "2026-11-03T11:09:45.968Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/de/53ca7b412e3683f151796b1f6d9a8d4d6518fb57a8ec22a4fe2d4bf7311f/pytewke-0.6.1-py3-none-any.whl", hash = "sha256:e717411ea4f8a622ce6941ff6e54b44f9c7deee606ab133c500da7d4f47a5bfc", size = 26006, upload-time = "2026-07-29T10:32:20.86Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/64/18bb9b2429e7e8e21de7519c634c15572c0ff617c70c55e21b770f3be4bf/pytewke-0.8.3-py3-none-any.whl", hash = "sha256:60e82f59eb7a72f0fa6568cbd982daee509bbff04d0cab87cbb63435656394ad", size = 27460, upload-time = "2026-11-03T11:09:43.911Z" },
 ]
 
 [[package]]

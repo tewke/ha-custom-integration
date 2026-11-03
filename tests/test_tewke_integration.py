@@ -42,7 +42,9 @@ from custom_components.tewke.scene import (
 )
 from custom_components.tewke.sensor import (
     CONFIG_SENSOR_DESCRIPTIONS,
+    RADAR_SENSOR_DESCRIPTIONS,
     TewkeConfigSensor,
+    TewkeRadarSensor,
 )
 from custom_components.tewke.sensor import (
     async_setup_entry as async_setup_sensor_entry,
@@ -392,6 +394,27 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         assert config_sensors[0].native_value == "pending_reboot"
         cfg_with_status.update_status = UpdateStatus.COMPLETE
         assert config_sensors[0].native_value == "complete"
+
+    async def test_radar_channel_diagnostic_sensor(self) -> None:
+        """Radar channel sensor returns channel or None on old firmware."""
+        coordinator, _ = self._make_coordinator()
+        channel_desc = next(
+            d for d in RADAR_SENSOR_DESCRIPTIONS if d.key == "radar_channel"
+        )
+        channel_sensor = TewkeRadarSensor(coordinator, channel_desc)
+
+        assert channel_sensor.unique_id == "dock_123_radar_channel"
+        assert (
+            channel_sensor.entity_description.entity_category
+            == EntityCategory.DIAGNOSTIC
+        )
+        assert not channel_sensor.entity_description.entity_registry_enabled_default
+        # Old firmware without channel reports None
+        assert channel_sensor.native_value is None
+
+        # New firmware with channel reports 1-based channel index
+        coordinator.data["radar"] = RadarData(proximity="near", channel=4)
+        assert channel_sensor.native_value == 4
 
     async def test_scene_light_optimistic_state_preserved(self) -> None:
         """Turning on a scene light updates _scene in-place before writing state."""

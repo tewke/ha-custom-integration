@@ -325,6 +325,13 @@ RADAR_SENSOR_DESCRIPTIONS: tuple[TewkeRadarSensorEntityDescription, ...] = (
         entity_registry_enabled_default=False,
         value_fn=lambda r: r.thresholds.far.hysteresis if r.thresholds else None,
     ),
+    TewkeRadarSensorEntityDescription(
+        key="radar_channel",
+        name="Radar Channel",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda r: getattr(r, "channel", None),
+    ),
 )
 
 

@@ -754,6 +754,44 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         assert CONF_CLIMATE_ENTITIES not in updated_options
         assert CONF_PRIMARY_CLIMATE_ENTITY not in updated_options
 
+    async def test_options_flow_can_clear_all_climate_entities(self) -> None:
+        """Verify options flow allows clearing all climate entities to empty list."""
+        hass = MagicMock()
+        entry = _make_mock_entry(scene_control_types={"s1": "light"})
+        entry.data[CONF_CLIMATE_ENTITIES] = ["climate.living_room"]
+        entry.data[CONF_PRIMARY_CLIMATE_ENTITY] = "climate.living_room"
+        mock_tap = MagicMock()
+        mock_tap.resources = {"heating": MagicMock()}
+        mock_tap.clear_heating = AsyncMock(
+            return_value=HeatingData(active=False, zones={})
+        )
+        coordinator = MagicMock()
+        coordinator.data = {"scenes": {}}
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=mock_tap,
+            coordinator=coordinator,
+            scene_control_types={"s1": "light"},
+        )
+
+        options_flow = TewkeOptionsFlow()
+        options_flow.hass = hass
+        with patch.object(TewkeOptionsFlow, "config_entry", new=entry):
+            # User clears CONF_CLIMATE_ENTITIES (even if primary was still filled)
+            res = await options_flow.async_step_init(
+                {
+                    CONF_CLIMATE_ENTITIES: [],
+                    CONF_PRIMARY_CLIMATE_ENTITY: "climate.living_room",
+                }
+            )
+            assert res["type"] == "create_entry"
+            assert res["data"][CONF_CLIMATE_ENTITIES] == []
+            assert res["data"][CONF_PRIMARY_CLIMATE_ENTITY] is None
+
+            entry.options = res["data"]
+            await async_push_heating_state(hass, entry)
+            mock_tap.clear_heating.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

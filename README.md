@@ -21,6 +21,7 @@ A Home Assistant integration for Tewke devices.
   - [x] As fans[^2]
   - [x] As switches
 - [x] Target control (default disabled)
+- [x] Climate control (bridge Home Assistant `climate` entities to the Tap Climate Control screen)
 - [x] Sensor data
 - [x] Repair flow for new Scenes
 - [x] Reconfigure flow

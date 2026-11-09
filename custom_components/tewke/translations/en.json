@@ -31,11 +31,15 @@
 				"title": "Default scene dimming"
 			},
 			"heating": {
-				"description": "Optionally select one or more Home Assistant climate entities to display and control on the Tewke Tap Heating Screen.",
-				"title": "Heating control",
+				"description": "Optionally select one or more Home Assistant climate entities to display and control on the Tewke Tap Climate Control screen.",
+				"title": "Climate control",
 				"data": {
 					"climate_entities": "Climate entities",
 					"primary_climate_entity": "Primary room climate entity"
+				},
+				"data_description": {
+					"climate_entities": "Climate entities to make available in the zone selector on this Tap. Leave empty to disable climate control on the Tap.",
+					"primary_climate_entity": "The climate entity for the room this Tap is in (selected by default when opening the Climate Control screen)."
 				}
 			},
 			"confirmation": {
@@ -46,15 +50,19 @@
 	},
 	"options": {
 		"abort": {
-			"no_fan_scenes": "No fan scenes are configured for this device."
+			"no_fan_scenes": "No configurable options (fan scenes or climate control) are available for this device."
 		},
 		"step": {
 			"init": {
-				"description": "Configure default fan scene dimming values and Home Assistant climate entities for the Tap Heating Screen.",
+				"description": "Configure default fan scene dimming values and Home Assistant climate entities for the Tewke Tap Climate Control screen.",
 				"title": "Tewke options",
 				"data": {
 					"climate_entities": "Climate entities",
 					"primary_climate_entity": "Primary room climate entity"
+				},
+				"data_description": {
+					"climate_entities": "Climate entities to make available in the zone selector on this Tap. Clear this list to remove climate control from the Tap.",
+					"primary_climate_entity": "The climate entity for the room this Tap is in (selected by default when opening the Climate Control screen)."
 				}
 			}
 		}

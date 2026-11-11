@@ -443,6 +443,33 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         assert coordinator.data["scenes"]["s1"].is_active
         assert coordinator.data["scenes"]["s1"].brightness == 100
 
+    async def test_scene_and_target_revert_ha_state_on_coap_error(self) -> None:
+        """Verify failed scene and target commands revert and write state back to HA."""
+        coordinator, mock_tap = self._make_coordinator()
+        mock_tap.set_scene = AsyncMock(
+            side_effect=PyTewkeCoapError("5.03 Service Unavailable", MagicMock())
+        )
+        mock_tap.set_target = AsyncMock(
+            side_effect=PyTewkeCoapError("5.03 Service Unavailable", MagicMock())
+        )
+
+        scene_light = TewkeSceneLight(coordinator, coordinator.data["scenes"]["s1"])
+        scene_light.async_write_ha_state = MagicMock()
+
+        await scene_light.async_turn_on(brightness=200)
+
+        assert not scene_light.is_on
+        assert scene_light.brightness == _tewke_to_ha_brightness(40)
+        scene_light.async_write_ha_state.assert_called_once()
+
+        target_light = TewkeTargetLight(coordinator, coordinator.data["targets"][0])
+        target_light.async_write_ha_state = MagicMock()
+
+        await target_light.async_turn_on(brightness=200)
+
+        assert not target_light.is_on
+        target_light.async_write_ha_state.assert_called_once()
+
     async def test_number_and_button_error_handling(self) -> None:
         """Number and button entities wrap CoAP failures in HomeAssistantError."""
         coordinator, mock_tap = self._make_coordinator()

@@ -145,11 +145,29 @@ class TestSetupAndCoordinator(unittest.IsolatedAsyncioTestCase):
         """Verify async_reload_entry updates coordinator listeners in-place."""
         hass = MagicMock()
         entry = _make_mock_entry()
-        entry.runtime_data = SimpleNamespace(coordinator=MagicMock())
+        entry.runtime_data = SimpleNamespace(
+            host="192.168.1.50", coordinator=MagicMock()
+        )
 
         await async_reload_entry(hass, entry)
 
         entry.runtime_data.coordinator.async_update_listeners.assert_called_once()
+        hass.config_entries.async_schedule_reload.assert_not_called()
+
+    async def test_reload_entry_schedules_reload_when_host_changes(self) -> None:
+        """Verify async_reload_entry schedules a full reload when CONF_HOST changes."""
+        hass = MagicMock()
+        entry = _make_mock_entry(host="192.168.1.99")
+        entry.runtime_data = SimpleNamespace(
+            host="192.168.1.50", coordinator=MagicMock()
+        )
+
+        await async_reload_entry(hass, entry)
+
+        hass.config_entries.async_schedule_reload.assert_called_once_with(
+            entry.entry_id
+        )
+        entry.runtime_data.coordinator.async_update_listeners.assert_not_called()
 
     async def test_coordinator_recovers_from_failed_state(self) -> None:
         """Verify _async_update_data polls when last_update_success is False."""
@@ -784,9 +802,6 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         flow.hass = MagicMock()
         flow.context = {"source": "reconfigure", "entry_id": entry.entry_id}
         flow._get_reconfigure_entry = MagicMock(return_value=entry)
-        flow.async_update_reload_and_abort = MagicMock(
-            return_value={"type": "abort", "reason": "reconfigure_successful"}
-        )
 
         mock_tap = MagicMock()
         mock_tap.resources = {"heating": MagicMock()}
@@ -806,8 +821,15 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         )
         abort_res = await flow.async_step_confirmation({})
         assert abort_res["reason"] == "reconfigure_successful"
-        updated_data = flow.async_update_reload_and_abort.call_args.kwargs["data"]
-        updated_options = flow.async_update_reload_and_abort.call_args.kwargs["options"]
+        updated_data = flow.hass.config_entries.async_update_entry.call_args.kwargs[
+            "data"
+        ]
+        updated_options = (
+            flow.hass.config_entries.async_update_entry.call_args.kwargs["options"]
+        )
+        flow.hass.config_entries.async_schedule_reload.assert_called_once_with(
+            entry.entry_id
+        )
         assert updated_data[CONF_CLIMATE_ENTITIES] == [
             "climate.bedroom",
             "climate.kitchen",

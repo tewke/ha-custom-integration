@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import CONF_HOST, CONF_NAME, EntityCategory
+from homeassistant.core import EVENT_STATE_CHANGED, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers.entity import DATA_CUSTOMIZE, EntityPlatformState
 from pytewke.data import (
     ConfigData,
     EnergyData,
@@ -444,7 +446,7 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
         assert coordinator.data["scenes"]["s1"].brightness == 100
 
     async def test_scene_and_target_revert_ha_state_on_coap_error(self) -> None:
-        """Verify failed scene and target commands revert and write state back to HA."""
+        """Verify failed scene and target commands revert and emit state_changed."""
         coordinator, mock_tap = self._make_coordinator()
         mock_tap.set_scene = AsyncMock(
             side_effect=PyTewkeCoapError("5.03 Service Unavailable", MagicMock())
@@ -453,22 +455,55 @@ class TestEntitiesAndDiagnostics(unittest.IsolatedAsyncioTestCase):
             side_effect=PyTewkeCoapError("5.03 Service Unavailable", MagicMock())
         )
 
+        hass = HomeAssistant(".")
+        hass.data[DATA_CUSTOMIZE] = {}
+        state_changed_events: list[object] = []
+
+        @callback
+        def _record_state_changed(event: object) -> None:
+            state_changed_events.append(event)
+
+        hass.bus.async_listen(EVENT_STATE_CHANGED, _record_state_changed)
+
         scene_light = TewkeSceneLight(coordinator, coordinator.data["scenes"]["s1"])
-        scene_light.async_write_ha_state = MagicMock()
+        scene_light.hass = hass
+        scene_light.platform = MagicMock()
+        scene_light.entity_id = "light.relax"
+        scene_light._platform_state = EntityPlatformState.ADDED
+        scene_light.async_write_ha_state()
+        assert len(state_changed_events) == 1
 
-        await scene_light.async_turn_on(brightness=200)
+        with self.assertRaises(HomeAssistantError):
+            await scene_light.async_turn_on(brightness=200)
 
+        mock_tap.set_scene.assert_awaited_once_with(
+            scene_id="s1",
+            state=True,
+            brightness=_ha_to_tewke_brightness(200),
+        )
         assert not scene_light.is_on
         assert scene_light.brightness == _tewke_to_ha_brightness(40)
-        scene_light.async_write_ha_state.assert_called_once()
+        assert len(state_changed_events) == 2
+        assert hass.states.get("light.relax").state == "off"
 
         target_light = TewkeTargetLight(coordinator, coordinator.data["targets"][0])
-        target_light.async_write_ha_state = MagicMock()
+        target_light.hass = hass
+        target_light.platform = MagicMock()
+        target_light.entity_id = "light.spot"
+        target_light._platform_state = EntityPlatformState.ADDED
+        target_light.async_write_ha_state()
+        assert len(state_changed_events) == 3
 
-        await target_light.async_turn_on(brightness=200)
+        with self.assertRaises(HomeAssistantError):
+            await target_light.async_turn_on(brightness=200)
 
+        mock_tap.set_target.assert_awaited_once_with(
+            target=0,
+            brightness=_ha_to_tewke_brightness(200),
+        )
         assert not target_light.is_on
-        target_light.async_write_ha_state.assert_called_once()
+        assert len(state_changed_events) == 4
+        assert hass.states.get("light.spot").state == "off"
 
     async def test_number_and_button_error_handling(self) -> None:
         """Number and button entities wrap CoAP failures in HomeAssistantError."""

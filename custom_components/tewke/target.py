@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from pytewke.error import (
     PyTewkeCoapError,
     PyTewkeInvalidRequestError,
@@ -91,6 +92,15 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             return None
         return _tewke_to_ha_brightness(target.brightness)
 
+    def _revert_target_state(self) -> None:
+        """Force-write current target state to Home Assistant after a failed command."""
+        prev_force_update = self.force_update
+        self._attr_force_update = True
+        try:
+            self.async_write_ha_state()
+        finally:
+            self._attr_force_update = prev_force_update
+
     async def async_turn_on(self, **kwargs: object) -> None:
         """Turn on the output, optionally at a specific brightness."""
         target = self._target
@@ -113,17 +123,21 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
                 target.brightness = tewke_brightness
                 self.async_write_ha_state()
             await self.coordinator.async_request_refresh()
-        except PyTewkeInvalidWallDockError:
+        except PyTewkeInvalidWallDockError as e:
             LOGGER.error(
                 "Attempted to set Target %s while not connected to Wall Dock",
                 self._target_index,
             )
-            self.async_write_ha_state()
+            self._revert_target_state()
+            msg = f"Failed to activate Tewke target {self._target_index}: {e}"
+            raise HomeAssistantError(msg) from e
         except (PyTewkeInvalidRequestError, RuntimeError) as e:
             LOGGER.error(
                 "Internal error activating Tewke target %s: %s", self._target_index, e
             )
-            self.async_write_ha_state()
+            self._revert_target_state()
+            msg = f"Internal error activating Tewke target {self._target_index}: {e}"
+            raise HomeAssistantError(msg) from e
         except (
             PyTewkeCoapError,
             PyTewkeInvalidResponseError,
@@ -131,7 +145,9 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             TimeoutError,
         ) as e:
             LOGGER.error("Error activating Tewke target %s: %s", self._target_index, e)
-            self.async_write_ha_state()
+            self._revert_target_state()
+            msg = f"Error activating Tewke target {self._target_index}: {e}"
+            raise HomeAssistantError(msg) from e
 
     async def async_turn_off(self, **_kwargs: object) -> None:
         """Turn off the output."""
@@ -145,17 +161,21 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
                 target.brightness = 0
                 self.async_write_ha_state()
             await self.coordinator.async_request_refresh()
-        except PyTewkeInvalidWallDockError:
+        except PyTewkeInvalidWallDockError as e:
             LOGGER.error(
                 "Attempted to set Target %s while not connected to Wall Dock",
                 self._target_index,
             )
-            self.async_write_ha_state()
+            self._revert_target_state()
+            msg = f"Failed to turn off Tewke target {self._target_index}: {e}"
+            raise HomeAssistantError(msg) from e
         except (PyTewkeInvalidRequestError, RuntimeError) as e:
             LOGGER.error(
                 "Internal error turning off Tewke target %s: %s", self._target_index, e
             )
-            self.async_write_ha_state()
+            self._revert_target_state()
+            msg = f"Internal error turning off Tewke target {self._target_index}: {e}"
+            raise HomeAssistantError(msg) from e
         except (
             PyTewkeCoapError,
             PyTewkeInvalidResponseError,
@@ -163,4 +183,6 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             TimeoutError,
         ) as e:
             LOGGER.error("Error turning off Tewke target %s: %s", self._target_index, e)
-            self.async_write_ha_state()
+            self._revert_target_state()
+            msg = f"Error turning off Tewke target {self._target_index}: {e}"
+            raise HomeAssistantError(msg) from e

@@ -20,6 +20,7 @@ from homeassistant.components.fan import FanEntity, FanEntityFeature
 from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEntity
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from pytewke.error import (
     PyTewkeCoapError,
     PyTewkeInvalidRequestError,
@@ -119,7 +120,12 @@ class TewkeSceneEntity(TewkeEntity):
         else:
             self._is_on = prev_is_on
             self._brightness = prev_brightness
-        self.async_write_ha_state()
+        prev_force_update = self.force_update
+        self._attr_force_update = True
+        try:
+            self.async_write_ha_state()
+        finally:
+            self._attr_force_update = prev_force_update
 
     async def _async_set_scene(
         self, *, state: bool, brightness: int | None = None
@@ -141,28 +147,34 @@ class TewkeSceneEntity(TewkeEntity):
                     brightness=brightness if state else None,
                 )
             self.async_write_ha_state()
-        except PyTewkeInvalidWallDockError:
+        except PyTewkeInvalidWallDockError as err:
             LOGGER.error("Attempted to set Scene while not connected to Wall Dock")
             self._revert_scene_state(
                 prev_is_on=prev_is_on, prev_brightness=prev_brightness
             )
-        except PyTewkeInvalidRequestError, RuntimeError:
+            msg = f"Failed to set Tewke scene {self._scene_id}: {err}"
+            raise HomeAssistantError(msg) from err
+        except (PyTewkeInvalidRequestError, RuntimeError) as err:
             action = "activating" if state else "deactivating"
             LOGGER.exception("Internal error %s Tewke scene %s", action, self._scene_id)
             self._revert_scene_state(
                 prev_is_on=prev_is_on, prev_brightness=prev_brightness
             )
+            msg = f"Internal error {action} Tewke scene {self._scene_id}: {err}"
+            raise HomeAssistantError(msg) from err
         except (
             PyTewkeCoapError,
             PyTewkeInvalidResponseError,
             PyTewkeUnknownError,
             TimeoutError,
-        ):
+        ) as err:
             action = "activating" if state else "deactivating"
             LOGGER.exception("Error %s Tewke scene %s", action, self._scene_id)
             self._revert_scene_state(
                 prev_is_on=prev_is_on, prev_brightness=prev_brightness
             )
+            msg = f"Error {action} Tewke scene {self._scene_id}: {err}"
+            raise HomeAssistantError(msg) from err
 
 
 class TewkeSceneSwitch(TewkeSceneEntity, SwitchEntity):

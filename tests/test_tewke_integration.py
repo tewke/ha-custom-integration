@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.components.sensor import SensorDeviceClass
@@ -65,6 +65,7 @@ from custom_components.tewke.sensor import (
 from custom_components.tewke.target import TewkeTargetLight
 from custom_components.tewke.util import (
     _ha_to_tewke_brightness,
+    _sync_device_metadata,
     _tewke_to_ha_brightness,
     async_setup_observe,
 )
@@ -156,6 +157,7 @@ class TestSetupAndCoordinator(unittest.IsolatedAsyncioTestCase):
         """Verify async_reload_entry schedules a full reload when CONF_HOST changes."""
         hass = MagicMock()
         entry = _make_mock_entry(host="192.168.1.99")
+        entry.data = MappingProxyType(entry.data)
         entry.runtime_data = SimpleNamespace(
             host="192.168.1.50", coordinator=MagicMock()
         )
@@ -166,6 +168,42 @@ class TestSetupAndCoordinator(unittest.IsolatedAsyncioTestCase):
             entry.entry_id
         )
         entry.runtime_data.coordinator.async_update_listeners.assert_not_called()
+
+    def test_sync_device_metadata_passes_entry_id_to_identifier_lookup(self) -> None:
+        """Verify _sync_device_metadata passes entry_id to identifier lookup."""
+        hass = MagicMock()
+        entry = _make_mock_entry()
+        mock_tap = MagicMock(wall_dock_id="dock_123")
+        entry.runtime_data = SimpleNamespace(tap=mock_tap)
+        mock_device = SimpleNamespace(id="dev_1", sw_version="1.0.0")
+        mock_registry = MagicMock()
+        mock_registry.async_get_device_by_identifier = MagicMock(
+            return_value=mock_device
+        )
+
+        config_data = ConfigData(
+            roomId="r1",
+            roomName="Bedroom",
+            deviceName="Bedroom Tap",
+            hardwareId="dock_123",
+            tewkeOsVersion="1.3.0",
+        )
+
+        with patch(
+            "custom_components.tewke.util.dr.async_get",
+            return_value=mock_registry,
+        ):
+            _sync_device_metadata(hass, entry, config_data)
+
+        mock_registry.async_get_device_by_identifier.assert_called_once_with(
+            (DOMAIN, "dock_123"), entry.entry_id
+        )
+        mock_registry.async_update_device.assert_any_call(
+            "dev_1", name="Bedroom Tap"
+        )
+        mock_registry.async_update_device.assert_any_call(
+            "dev_1", sw_version="1.3.0"
+        )
 
     async def test_coordinator_recovers_from_failed_state(self) -> None:
         """Verify _async_update_data polls when last_update_success is False."""

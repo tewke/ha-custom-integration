@@ -134,7 +134,7 @@ def _sync_device_metadata(
     device_id = tap.wall_dock_id
     if hasattr(device_registry, "async_get_device_by_identifier"):
         device = device_registry.async_get_device_by_identifier(
-            (DOMAIN, device_id)
+            (DOMAIN, device_id), entry.entry_id
         )
     else:
         device = device_registry.async_get_device(

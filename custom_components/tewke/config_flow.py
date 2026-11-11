@@ -135,7 +135,10 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                     return self.async_abort(reason="cannot_identify")
 
                 await self.async_set_unique_id(unique_id, raise_on_progress=False)
-                self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+                self._abort_if_unique_id_configured(
+                    updates={CONF_HOST: host},
+                    reload_on_update=False,
+                )
 
                 self._tap = tap
                 self._discovered_host = host
@@ -177,7 +180,10 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="cannot_identify")
 
         await self.async_set_unique_id(unique_id)
-        self._abort_if_unique_id_configured(updates={CONF_HOST: discovery_info.host})
+        self._abort_if_unique_id_configured(
+            updates={CONF_HOST: discovery_info.host},
+            reload_on_update=False,
+        )
 
         self._discovered_host = discovery_info.host
         self._discovered_name = discovery_info.properties.get(
@@ -436,11 +442,13 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 options.pop(CONF_CLIMATE_ENTITIES, None)
                 options.pop(CONF_PRIMARY_CLIMATE_ENTITY, None)
 
-                return self.async_update_reload_and_abort(
+                self.hass.config_entries.async_update_entry(
                     entry,
                     data=data,
                     options=options,
                 )
+                self.hass.config_entries.async_schedule_reload(entry.entry_id)
+                return self.async_abort(reason="reconfigure_successful")
 
             return self.async_create_entry(
                 title=self._discovered_name,

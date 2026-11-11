@@ -93,5 +93,18 @@ async def async_reload_entry(
 ) -> None:
     """Handle config entry options/data update."""
     if hasattr(entry, "runtime_data") and entry.runtime_data is not None:
+        current_host = (
+            entry.data.get(CONF_HOST)
+            if isinstance(getattr(entry, "data", None), dict)
+            else None
+        )
+        runtime_host = getattr(entry.runtime_data, "host", None)
+        if (
+            current_host is not None
+            and runtime_host is not None
+            and current_host != runtime_host
+        ):
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+            return
         async_setup_climate_state_listener(hass, entry)
         entry.runtime_data.coordinator.async_update_listeners()

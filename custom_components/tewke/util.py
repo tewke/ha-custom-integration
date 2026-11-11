@@ -132,7 +132,14 @@ def _sync_device_metadata(
     tap = entry.runtime_data.tap
     device_registry = dr.async_get(hass)
     device_id = tap.wall_dock_id
-    device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
+    if hasattr(device_registry, "async_get_device_by_identifier"):
+        device = device_registry.async_get_device_by_identifier(
+            (DOMAIN, device_id)
+        )
+    else:
+        device = device_registry.async_get_device(
+            identifiers={(DOMAIN, device_id)}
+        )
 
     if device:
         new_name = config_data.device_name

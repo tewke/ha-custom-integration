@@ -93,11 +93,7 @@ async def async_reload_entry(
 ) -> None:
     """Handle config entry options/data update."""
     if hasattr(entry, "runtime_data") and entry.runtime_data is not None:
-        current_host = (
-            entry.data.get(CONF_HOST)
-            if isinstance(getattr(entry, "data", None), dict)
-            else None
-        )
+        current_host = entry.data.get(CONF_HOST)
         runtime_host = getattr(entry.runtime_data, "host", None)
         if (
             current_host is not None

@@ -105,10 +105,28 @@ class TewkeSceneEntity(TewkeEntity):
         """Return the last commanded fan speed (0-100), or None if unknown."""
         return self._brightness
 
+    def _revert_scene_state(
+        self, *, prev_is_on: bool | None, prev_brightness: int | None
+    ) -> None:
+        """Restore previous scene state in Home Assistant after a failed command."""
+        scene = self._scene
+        if scene is not None:
+            self._is_on = scene.is_active
+            if scene.brightness is not None:
+                self._brightness = scene.brightness
+            else:
+                self._brightness = prev_brightness
+        else:
+            self._is_on = prev_is_on
+            self._brightness = prev_brightness
+        self.async_write_ha_state()
+
     async def _async_set_scene(
         self, *, state: bool, brightness: int | None = None
     ) -> None:
         """Set the scene state and brightness."""
+        prev_is_on = self._is_on
+        prev_brightness = self._brightness
         try:
             await self.coordinator.config_entry.runtime_data.tap.set_scene(
                 scene_id=self._scene_id, state=state, brightness=brightness
@@ -125,9 +143,15 @@ class TewkeSceneEntity(TewkeEntity):
             self.async_write_ha_state()
         except PyTewkeInvalidWallDockError:
             LOGGER.error("Attempted to set Scene while not connected to Wall Dock")
+            self._revert_scene_state(
+                prev_is_on=prev_is_on, prev_brightness=prev_brightness
+            )
         except PyTewkeInvalidRequestError, RuntimeError:
             action = "activating" if state else "deactivating"
             LOGGER.exception("Internal error %s Tewke scene %s", action, self._scene_id)
+            self._revert_scene_state(
+                prev_is_on=prev_is_on, prev_brightness=prev_brightness
+            )
         except (
             PyTewkeCoapError,
             PyTewkeInvalidResponseError,
@@ -136,6 +160,9 @@ class TewkeSceneEntity(TewkeEntity):
         ):
             action = "activating" if state else "deactivating"
             LOGGER.exception("Error %s Tewke scene %s", action, self._scene_id)
+            self._revert_scene_state(
+                prev_is_on=prev_is_on, prev_brightness=prev_brightness
+            )
 
 
 class TewkeSceneSwitch(TewkeSceneEntity, SwitchEntity):

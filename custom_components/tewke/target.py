@@ -118,10 +118,12 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
                 "Attempted to set Target %s while not connected to Wall Dock",
                 self._target_index,
             )
+            self.async_write_ha_state()
         except (PyTewkeInvalidRequestError, RuntimeError) as e:
             LOGGER.error(
                 "Internal error activating Tewke target %s: %s", self._target_index, e
             )
+            self.async_write_ha_state()
         except (
             PyTewkeCoapError,
             PyTewkeInvalidResponseError,
@@ -129,6 +131,7 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             TimeoutError,
         ) as e:
             LOGGER.error("Error activating Tewke target %s: %s", self._target_index, e)
+            self.async_write_ha_state()
 
     async def async_turn_off(self, **_kwargs: object) -> None:
         """Turn off the output."""
@@ -147,10 +150,12 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
                 "Attempted to set Target %s while not connected to Wall Dock",
                 self._target_index,
             )
+            self.async_write_ha_state()
         except (PyTewkeInvalidRequestError, RuntimeError) as e:
             LOGGER.error(
                 "Internal error turning off Tewke target %s: %s", self._target_index, e
             )
+            self.async_write_ha_state()
         except (
             PyTewkeCoapError,
             PyTewkeInvalidResponseError,
@@ -158,3 +163,4 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
             TimeoutError,
         ) as e:
             LOGGER.error("Error turning off Tewke target %s: %s", self._target_index, e)
+            self.async_write_ha_state()

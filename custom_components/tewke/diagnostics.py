@@ -7,6 +7,12 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.const import CONF_HOST
 
+from .heating import (
+    _get_active_pending_commands,
+    get_configured_climate_entities,
+    get_configured_primary_climate_entity,
+)
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
@@ -63,6 +69,13 @@ async def async_get_config_entry_diagnostics(
                 "is_retrying_observe": coordinator.is_retrying_observe,
                 "pending_scenes_count": len(runtime_data.pending_scenes),
                 "resources": resources,
+            },
+            "heating": {
+                "configured_climate_entities": get_configured_climate_entities(entry),
+                "primary_climate_entity": get_configured_primary_climate_entity(entry),
+                "pending_heating_command_zones": sorted(
+                    _get_active_pending_commands(entry)
+                ),
             },
             "coordinator_data": coordinator_data,
         },

@@ -1,3 +1,8 @@
 .venv/
 tmp/
 __pycache__/
+
+# Internal / EGM design and scratch documentation (never commit to public HACS repo)
+/docs/
+/.dev/
+/ai-docs/

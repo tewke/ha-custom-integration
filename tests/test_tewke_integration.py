@@ -8,6 +8,7 @@ import unittest
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from homeassistant.components.climate import ClimateEntityFeature
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import CONF_HOST, CONF_NAME, EntityCategory
 from homeassistant.core import EVENT_STATE_CHANGED, HomeAssistant, callback
@@ -200,12 +201,8 @@ class TestSetupAndCoordinator(unittest.IsolatedAsyncioTestCase):
         mock_registry.async_get_device_by_identifier.assert_called_once_with(
             (DOMAIN, "dock_123"), entry.entry_id
         )
-        mock_registry.async_update_device.assert_any_call(
-            "dev_1", name="Bedroom Tap"
-        )
-        mock_registry.async_update_device.assert_any_call(
-            "dev_1", sw_version="1.3.0"
-        )
+        mock_registry.async_update_device.assert_any_call("dev_1", name="Bedroom Tap")
+        mock_registry.async_update_device.assert_any_call("dev_1", sw_version="1.3.0")
 
     async def test_coordinator_recovers_from_failed_state(self) -> None:
         """Verify _async_update_data polls when last_update_success is False."""
@@ -706,6 +703,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             "cool",
             "dry",
             "fan_only",
+            "auto",
             "off",
         ]
         assert zones["climate.living_room"].preset_mode == "comfort"
@@ -862,9 +860,9 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         updated_data = flow.hass.config_entries.async_update_entry.call_args.kwargs[
             "data"
         ]
-        updated_options = (
-            flow.hass.config_entries.async_update_entry.call_args.kwargs["options"]
-        )
+        updated_options = flow.hass.config_entries.async_update_entry.call_args.kwargs[
+            "options"
+        ]
         flow.hass.config_entries.async_schedule_reload.assert_called_once_with(
             entry.entry_id
         )
@@ -913,6 +911,281 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             entry.options = res["data"]
             await async_push_heating_state(hass, entry)
             mock_tap.clear_heating.assert_awaited_once()
+
+    async def test_auto_heat_cool_swing_and_range_deadband(self) -> None:
+        """Verify auto/heat_cool active actions, rigid range deadbands, and swing."""
+        hass = MagicMock()
+        hass.services.async_call = AsyncMock()
+        hass.async_create_task = MagicMock(side_effect=lambda coro: coro.close())
+
+        range_ac = SimpleNamespace(
+            state="heat_cool",
+            attributes={
+                "friendly_name": "Lounge Heat Pump",
+                "current_temperature": 22.0,
+                "temperature": None,
+                "target_temp_low": 20.0,
+                "target_temp_high": 21.5,
+                "target_temp_step": 0.5,
+                "hvac_action": "cooling",
+                "hvac_modes": [
+                    "off",
+                    "heat",
+                    "cool",
+                    "heat_cool",
+                    "auto",
+                    "dry",
+                    "fan_only",
+                ],
+                "min_temp": 16.0,
+                "max_temp": 30.0,
+                "supported_features": (
+                    ClimateEntityFeature.TARGET_TEMPERATURE
+                    | ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+                    | ClimateEntityFeature.SWING_MODE
+                ),
+                "swing_mode": "vertical",
+                "swing_modes": ["off", "vertical", "both"],
+            },
+        )
+        sched_auto = SimpleNamespace(
+            state="auto",
+            attributes={
+                "friendly_name": "Hall Schedule",
+                "current_temperature": 19.5,
+                "temperature": None,
+                "hvac_action": "heating",
+                "hvac_modes": ["off", "heat", "auto"],
+                "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE,
+            },
+        )
+        states_map = {"climate.lounge": range_ac, "climate.hall": sched_auto}
+        hass.states.get = MagicMock(side_effect=states_map.get)
+
+        entry = _make_mock_entry()
+        entry.data[CONF_CLIMATE_ENTITIES] = ["climate.lounge", "climate.hall"]
+        entry.data[CONF_PRIMARY_CLIMATE_ENTITY] = "climate.lounge"
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=MagicMock(resources={"heating": MagicMock()}),
+            coordinator=MagicMock(data={}),
+            scene_control_types={},
+        )
+
+        zones = build_heating_zones(hass, entry)
+        lounge = zones["climate.lounge"]
+        assert lounge.system_mode == "heat_cool"
+        assert lounge.actively_cooling is True
+        assert lounge.actively_heating is False
+        assert lounge.can_set_temperature is True
+        assert lounge.target_temperature == 21.0
+        assert (lounge.min_temp, lounge.max_temp) == (17.0, 29.0)
+        assert (lounge.swing_mode, lounge.swing_modes) == (
+            "vertical",
+            ["off", "vertical", "both"],
+        )
+
+        hall = zones["climate.hall"]
+        assert hall.system_mode == "auto"
+        assert hall.actively_heating is True
+        assert hall.can_set_temperature is False
+        assert hall.target_temperature == 19.5
+
+        # Odd-deadband target 20.5 preserves 1.5C span (19.5..21.0)
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(
+                zone_id="climate.lounge",
+                target_temperature=20.5,
+                swing_mode="both",
+            ),
+        )
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_temperature",
+            {
+                "entity_id": "climate.lounge",
+                "target_temp_low": 19.5,
+                "target_temp_high": 21.0,
+            },
+            blocking=True,
+        )
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_swing_mode",
+            {"entity_id": "climate.lounge", "swing_mode": "both"},
+            blocking=True,
+        )
+
+        # Split-leg Z-Wave update stays masked and preserves 1.5C span; jump clears
+        range_ac.attributes["target_temp_low"] = 19.5
+        split_zones = build_heating_zones(hass, entry)
+        assert split_zones["climate.lounge"].target_temperature == 20.5
+        assert split_zones["climate.lounge"].swing_mode == "both"
+        assert entry.runtime_data.zone_deadband_spans["climate.lounge"] == 1.5
+
+        range_ac.attributes["target_temp_low"] = 23.0
+        range_ac.attributes["target_temp_high"] = 25.0
+        assert (
+            build_heating_zones(hass, entry)["climate.lounge"].target_temperature
+            == 24.0
+        )
+
+        # Schedule-only auto -> heat masks can_set_temperature and clears active flame
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(zone_id="climate.hall", system_mode="heat"),
+        )
+        unconfirmed_hall = build_heating_zones(hass, entry)["climate.hall"]
+        assert unconfirmed_hall.system_mode == "heat"
+        assert unconfirmed_hall.can_set_temperature is True
+        assert unconfirmed_hall.actively_heating is False
+
+    async def test_range_clamping_wake_observe_and_diagnostics(self) -> None:
+        """Verify range clamping, wake-to-heat_cool, observe, and diagnostics."""
+        hass = MagicMock()
+        hass.services.async_call = AsyncMock()
+        hass.async_create_task = MagicMock(side_effect=lambda coro: coro.close())
+
+        range_ac = SimpleNamespace(
+            state="off",
+            attributes={
+                "friendly_name": "Lounge Heat Pump",
+                "current_temperature": 22.0,
+                "temperature": 20.0,
+                "target_temp_low": None,
+                "target_temp_high": None,
+                "hvac_modes": ["off", "heat_cool"],
+                "min_temp": 16.0,
+                "max_temp": 30.0,
+                "supported_features": (
+                    ClimateEntityFeature.TARGET_TEMPERATURE
+                    | ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+                ),
+            },
+        )
+        single_ac = SimpleNamespace(
+            state="heat_cool",
+            attributes={
+                "friendly_name": "Study Split AC",
+                "current_temperature": 21.0,
+                "temperature": 20.5,
+                "hvac_modes": ["off", "heat_cool", "auto"],
+                "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE,
+            },
+        )
+        states_map = {"climate.lounge": range_ac, "climate.study": single_ac}
+        hass.states.get = MagicMock(side_effect=states_map.get)
+
+        entry = _make_mock_entry()
+        entry.data[CONF_CLIMATE_ENTITIES] = ["climate.lounge", "climate.study"]
+        entry.data[CONF_PRIMARY_CLIMATE_ENTITY] = "climate.lounge"
+
+        mock_tap = MagicMock()
+        mock_tap.wall_dock_id = "dock-1"
+        mock_tap.tewke_os_version = "2.0.0"
+        mock_tap.update_status = UpdateStatus.IDLE
+        mock_tap.resources = {"heating": MagicMock()}
+        mock_tap.observe = AsyncMock()
+        mock_tap.close_observations = AsyncMock()
+        mock_tap.discover = AsyncMock()
+        coordinator = MagicMock()
+        coordinator.is_retrying_observe = False
+        coordinator.data = {"heating": HeatingData(active=True, zones={})}
+
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=mock_tap,
+            coordinator=coordinator,
+            scene_control_types={},
+        )
+
+        # Wake off -> heat_cool + clamping near max_temp (30.0 -> 28.0..30.0)
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(
+                zone_id="climate.lounge",
+                system_mode="heat_cool",
+                target_temperature=29.5,
+            ),
+        )
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_hvac_mode",
+            {"entity_id": "climate.lounge", "hvac_mode": "heat_cool"},
+            blocking=True,
+        )
+        hass.services.async_call.assert_any_await(
+            "climate",
+            "set_temperature",
+            {
+                "entity_id": "climate.lounge",
+                "target_temp_low": 28.0,
+                "target_temp_high": 30.0,
+            },
+            blocking=True,
+        )
+
+        # Single-setpoint heat_cool entity receives scalar temperature
+        hass.services.async_call.reset_mock()
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(zone_id="climate.study", target_temperature=22.0),
+        )
+        hass.services.async_call.assert_awaited_once_with(
+            "climate",
+            "set_temperature",
+            {"entity_id": "climate.study", "temperature": 22.0},
+            blocking=True,
+        )
+
+        # Command-only Observe notification preserves cached coordinator zones
+        zones = build_heating_zones(hass, entry)
+        coordinator.data = {"heating": HeatingData(active=True, zones=zones)}
+        await async_setup_observe(coordinator, hass, entry)
+        heating_cb = mock_tap.observe.call_args.kwargs["heating_callback"]
+        heating_cb(
+            HeatingData(
+                active=True,
+                zones={},
+                command=HeatingCommandData(
+                    zone_id="climate.study",
+                    system_mode="auto",
+                ),
+            )
+        )
+        pushed = coordinator.async_set_updated_data.call_args.args[0]["heating"]
+        assert set(pushed.zones.keys()) == {"climate.lounge", "climate.study"}
+
+        diag = await async_get_config_entry_diagnostics(hass, entry)
+        assert diag["heating"]["configured_climate_entities"] == [
+            "climate.lounge",
+            "climate.study",
+        ]
+        assert diag["heating"]["primary_climate_entity"] == "climate.lounge"
+        assert "climate.lounge" in diag["heating"]["pending_heating_command_zones"]
+
+        # Multi-zone reconcile schedules for the earliest unexpired command expiry
+        hass.loop = MagicMock()
+        entry.runtime_data.pending_heating_commands["climate.lounge"].expires_at = (
+            entry.runtime_data.pending_heating_commands["climate.lounge"].expires_at
+            - 10.0
+        )
+        with patch(
+            "custom_components.tewke.heating.async_call_later",
+            return_value=MagicMock(),
+        ) as mock_call_later:
+            await async_handle_heating_command(
+                hass,
+                entry,
+                HeatingCommandData(zone_id="climate.study", system_mode="auto"),
+            )
+            scheduled_delay = mock_call_later.call_args.args[1]
+            assert 1.0 < scheduled_delay < 7.0
 
 
 if __name__ == "__main__":

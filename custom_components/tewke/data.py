@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import Callable
 
     import pytewke
@@ -25,11 +26,18 @@ class PendingZoneCommand:
     system_mode: str | None = None
     prev_system_mode: str | None = None
     target_temperature: float | None = None
+    expected_midpoint: float | None = None
+    expected_low: float | None = None
+    expected_high: float | None = None
     prev_target_temperature: float | None = None
+    prev_low: float | None = None
+    prev_high: float | None = None
     preset_mode: str | None = None
     prev_preset_mode: str | None = None
     fan_mode: str | None = None
     prev_fan_mode: str | None = None
+    swing_mode: str | None = None
+    prev_swing_mode: str | None = None
 
 
 @dataclass
@@ -49,3 +57,5 @@ class TewkeData:
     pending_heating_commands: dict[str, PendingZoneCommand] = field(
         default_factory=dict
     )
+    zone_deadband_spans: dict[str, float] = field(default_factory=dict)
+    heating_zone_locks: dict[str, asyncio.Lock] = field(default_factory=dict)

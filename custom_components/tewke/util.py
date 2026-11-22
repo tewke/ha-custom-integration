@@ -137,9 +137,7 @@ def _sync_device_metadata(
             (DOMAIN, device_id), entry.entry_id
         )
     else:
-        device = device_registry.async_get_device(
-            identifiers={(DOMAIN, device_id)}
-        )
+        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
 
     if device:
         new_name = config_data.device_name
@@ -279,7 +277,18 @@ async def async_setup_observe(  # noqa: PLR0915
 
     def _on_heating_update(heating_data: HeatingData) -> None:
         """Handle heating updates and commands from the Tewke device."""
-        _push_if_changed(coordinator, "heating", heating_data)
+        merged_data = heating_data
+        if (
+            heating_data.command is not None
+            and not heating_data.zones
+            and coordinator.data is not None
+        ):
+            prev_heating = coordinator.data.get("heating")
+            if prev_heating is not None and prev_heating.zones:
+                merged_data = heating_data.model_copy(
+                    update={"zones": prev_heating.zones}
+                )
+        _push_if_changed(coordinator, "heating", merged_data)
         if heating_data.command is not None:
             hass.async_create_task(
                 async_handle_heating_command(hass, entry, heating_data.command)

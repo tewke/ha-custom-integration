@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.components.climate import ClimateEntityFeature
 from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.const import CONF_HOST, CONF_NAME, EntityCategory
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_NAME,
+    EntityCategory,
+    UnitOfTemperature,
+)
 from homeassistant.core import EVENT_STATE_CHANGED, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers.entity import DATA_CUSTOMIZE, EntityPlatformState
@@ -974,31 +979,40 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         )
 
         zones = build_heating_zones(hass, entry)
-        lounge = zones["climate.lounge"]
-        assert lounge.system_mode == "heat_cool"
-        assert lounge.actively_cooling is True
-        assert lounge.actively_heating is False
-        assert lounge.can_set_temperature is True
-        assert lounge.target_temperature == 21.0
-        assert (lounge.min_temp, lounge.max_temp) == (17.0, 29.0)
+        lounge, hall = zones["climate.lounge"], zones["climate.hall"]
+        assert (
+            lounge.system_mode,
+            lounge.actively_cooling,
+            lounge.actively_heating,
+            lounge.can_set_temperature,
+            lounge.target_temperature,
+            lounge.target_temp_low,
+            lounge.target_temp_high,
+            lounge.min_temp_gap,
+            lounge.min_temp,
+            lounge.max_temp,
+        ) == ("heat_cool", True, False, True, 21.0, 20.0, 21.5, 1.5, 16.0, 30.0)
         assert (lounge.swing_mode, lounge.swing_modes) == (
             "vertical",
             ["off", "vertical", "both"],
         )
+        assert (
+            hall.system_mode,
+            hall.actively_heating,
+            hall.can_set_temperature,
+            hall.target_temperature,
+            hall.target_temp_low,
+            hall.target_temp_high,
+        ) == ("auto", True, False, 19.5, None, None)
 
-        hall = zones["climate.hall"]
-        assert hall.system_mode == "auto"
-        assert hall.actively_heating is True
-        assert hall.can_set_temperature is False
-        assert hall.target_temperature == 19.5
-
-        # Odd-deadband target 20.5 preserves 1.5C span (19.5..21.0)
+        # Native dual-setpoint command dispatches exact bounds + swing
         await async_handle_heating_command(
             hass,
             entry,
             HeatingCommandData(
                 zone_id="climate.lounge",
-                target_temperature=20.5,
+                target_temp_low=19.5,
+                target_temp_high=22.0,
                 swing_mode="both",
             ),
         )
@@ -1008,7 +1022,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             {
                 "entity_id": "climate.lounge",
                 "target_temp_low": 19.5,
-                "target_temp_high": 21.0,
+                "target_temp_high": 22.0,
             },
             blocking=True,
         )
@@ -1019,20 +1033,26 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             blocking=True,
         )
 
-        # Split-leg Z-Wave update stays masked and preserves 1.5C span on next command
+        # Split-leg Z-Wave update keeps high masked at 22.0
         range_ac.attributes["target_temp_low"] = 19.5
         split_zones = build_heating_zones(hass, entry)
-        assert split_zones["climate.lounge"].target_temperature == 20.5
+        assert (
+            split_zones["climate.lounge"].target_temp_low,
+            split_zones["climate.lounge"].target_temp_high,
+        ) == (19.5, 22.0)
+        assert split_zones["climate.lounge"].target_temperature == 21.0
         assert split_zones["climate.lounge"].swing_mode == "both"
-        assert entry.runtime_data.zone_deadband_spans["climate.lounge"] == 1.5
 
+        # Legacy scalar-only command on range entity preserves live span (2.5C)
+        range_ac.attributes["target_temp_high"] = 22.0
+        build_heating_zones(hass, entry)
         hass.services.async_call.reset_mock()
         await async_handle_heating_command(
             hass,
             entry,
             HeatingCommandData(
                 zone_id="climate.lounge",
-                target_temperature=21.0,
+                target_temperature=21.5,
                 swing_mode="off",
             ),
         )
@@ -1042,7 +1062,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             {
                 "entity_id": "climate.lounge",
                 "target_temp_low": 20.0,
-                "target_temp_high": 21.5,
+                "target_temp_high": 22.5,
             },
             blocking=True,
         )
@@ -1052,10 +1072,12 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
 
         range_ac.attributes["target_temp_low"] = 23.0
         range_ac.attributes["target_temp_high"] = 25.0
-        assert (
-            build_heating_zones(hass, entry)["climate.lounge"].target_temperature
-            == 24.0
+        settled_lounge = build_heating_zones(hass, entry)["climate.lounge"]
+        assert (settled_lounge.target_temp_low, settled_lounge.target_temp_high) == (
+            23.0,
+            25.0,
         )
+        assert settled_lounge.target_temperature == 24.0
 
         # Schedule-only auto -> heat masks can_set_temperature and clears active flame
         await async_handle_heating_command(
@@ -1140,7 +1162,8 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             HeatingCommandData(
                 zone_id="climate.lounge",
                 system_mode="heat_cool",
-                target_temperature=17.5,
+                target_temp_low=16.5,
+                target_temp_high=19.0,
             ),
         )
         hass.services.async_call.assert_awaited_once_with(
@@ -1149,7 +1172,7 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             {"entity_id": "climate.lounge", "hvac_mode": "heat_cool"},
             blocking=True,
         )
-        # HA enters heat_cool (stored 20..22); deferred write sets 16..19 (mid 17.5)
+        # HA enters heat_cool (20..22); deferred write quantises 16.5..19.0 -> 17..19
         hass.services.async_call.reset_mock()
         for task_coro in scheduled_tasks:
             task_coro.close()
@@ -1175,27 +1198,37 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             "set_temperature",
             {
                 "entity_id": "climate.lounge",
-                "target_temp_low": 16.0,
+                "target_temp_low": 17.0,
                 "target_temp_high": 19.0,
             },
             blocking=True,
         )
-        # Multi-step 0.5 nudges on step=1.0 never ratchet deadband wider than 2.0C
-        range_ac.attributes["target_temp_low"] = 16.0
-        range_ac.attributes["target_temp_high"] = 19.0
+        # Fahrenheit instance uses 3.0F min_temp_gap and quantises onto 1.0F step
+        hass.config.units.temperature_unit = UnitOfTemperature.FAHRENHEIT
+        range_ac.attributes["min_temp"] = 60.0
+        range_ac.attributes["max_temp"] = 90.0
+        range_ac.attributes["target_temp_low"] = 68.0
+        range_ac.attributes["target_temp_high"] = 72.0
+        us_zone = build_heating_zones(hass, entry)["climate.lounge"]
+        assert us_zone.min_temp_gap == 3.0
+        assert us_zone.as_dict()["minTempGap"] == 3.0
         hass.services.async_call.reset_mock()
         await async_handle_heating_command(
             hass,
             entry,
-            HeatingCommandData(zone_id="climate.lounge", target_temperature=20.0),
+            HeatingCommandData(
+                zone_id="climate.lounge",
+                target_temp_low=70.0,
+                target_temp_high=71.5,
+            ),
         )
         hass.services.async_call.assert_awaited_once_with(
             "climate",
             "set_temperature",
             {
                 "entity_id": "climate.lounge",
-                "target_temp_low": 19.0,
-                "target_temp_high": 21.0,
+                "target_temp_low": 70.0,
+                "target_temp_high": 73.0,
             },
             blocking=True,
         )
@@ -1418,7 +1451,16 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
             blocking=True,
         )
 
-        # 3. Rejected off -> heat_cool clears dependent setpoint rather than deferring
+        # 3. Switching range entity to cool mode clears target_temp_low/high
+        range_ac.state = "cool"
+        range_ac.attributes["temperature"] = 21.5
+        cool_lounge = build_heating_zones(hass, entry)["climate.lounge"]
+        assert cool_lounge.system_mode == "cool"
+        assert cool_lounge.target_temp_low is None
+        assert cool_lounge.target_temp_high is None
+        assert cool_lounge.target_temperature == 21.5
+
+        # 4. Rejected off -> heat_cool clears dependent setpoint rather than deferring
         range_ac.state = "off"
         range_ac.attributes["target_temp_low"] = None
         range_ac.attributes["target_temp_high"] = None

@@ -27,9 +27,9 @@ class PendingZoneCommand:
     system_mode: str | None = None
     prev_system_mode: str | None = None
     target_temperature: float | None = None
-    had_unsettled_temp: bool = False
     deferred_temp_mode: str | None = None
-    expected_midpoint: float | None = None
+    deferred_target_temp_low: float | None = None
+    deferred_target_temp_high: float | None = None
     expected_low: float | None = None
     expected_high: float | None = None
     prev_targets: set[float] = field(default_factory=set)
@@ -55,11 +55,10 @@ class TewkeData:
     observe_active: bool = False
     initial_heating_sync_done: bool = False
     climate_unsub: Callable[[], None] | None = None
+    climate_unloaded: bool = False
     heating_reconcile_unsub: Callable[[], None] | None = None
     heating_commands_in_flight: int = 0
     pending_heating_commands: dict[str, PendingZoneCommand] = field(
         default_factory=dict
     )
-    zone_deadband_spans: dict[str, float] = field(default_factory=dict)
-    zone_commanded_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     heating_zone_locks: dict[str, asyncio.Lock] = field(default_factory=dict)

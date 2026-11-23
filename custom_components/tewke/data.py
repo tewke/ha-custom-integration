@@ -27,13 +27,14 @@ class PendingZoneCommand:
     system_mode: str | None = None
     prev_system_mode: str | None = None
     target_temperature: float | None = None
+    had_unsettled_temp: bool = False
     deferred_temp_mode: str | None = None
     expected_midpoint: float | None = None
     expected_low: float | None = None
     expected_high: float | None = None
-    prev_target_temperature: float | None = None
-    prev_low: float | None = None
-    prev_high: float | None = None
+    prev_targets: set[float] = field(default_factory=set)
+    prev_lows: set[float] = field(default_factory=set)
+    prev_highs: set[float] = field(default_factory=set)
     preset_mode: str | None = None
     prev_preset_modes: set[str | None] = field(default_factory=set)
     fan_mode: str | None = None

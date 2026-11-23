@@ -1330,6 +1330,112 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         for task_coro in scheduled_tasks:
             task_coro.close()
 
+    async def test_superseded_bounds_off_scalar_and_rejected_mode_guards(
+        self,
+    ) -> None:
+        """Verify superseded range acks, off scalar writes, and rejected mode guards."""
+        scheduled_tasks: list[object] = []
+        hass = MagicMock()
+        hass.services.async_call = AsyncMock()
+        hass.async_create_task = MagicMock(side_effect=scheduled_tasks.append)
+
+        range_ac = SimpleNamespace(
+            state="heat_cool",
+            attributes={
+                "friendly_name": "Lounge",
+                "current_temperature": 22.0,
+                "temperature": None,
+                "target_temp_low": 20.0,
+                "target_temp_high": 21.5,
+                "target_temp_step": 0.5,
+                "hvac_modes": ["off", "heat_cool"],
+                "min_temp": 16.0,
+                "max_temp": 30.0,
+                "supported_features": (
+                    ClimateEntityFeature.TARGET_TEMPERATURE
+                    | ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+                ),
+            },
+        )
+        mqtt_off = SimpleNamespace(
+            state="off",
+            attributes={
+                "friendly_name": "MQTT Heater",
+                "current_temperature": 18.0,
+                "temperature": 19.0,
+                "hvac_modes": ["off", "heat"],
+                "supported_features": ClimateEntityFeature.TARGET_TEMPERATURE,
+            },
+        )
+        states_map = {"climate.lounge": range_ac, "climate.mqtt": mqtt_off}
+        hass.states.get = MagicMock(side_effect=states_map.get)
+
+        entry = _make_mock_entry()
+        entry.data[CONF_CLIMATE_ENTITIES] = ["climate.lounge", "climate.mqtt"]
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=MagicMock(
+                resources={"heating": MagicMock()},
+                set_heating=AsyncMock(
+                    side_effect=lambda zones, active=True: HeatingData(
+                        active=active, zones=zones
+                    )
+                ),
+            ),
+            coordinator=MagicMock(data={}),
+            scene_control_types={},
+        )
+
+        # 1. Request 20.5 (19.5..21.0) then 22.0 (21.5..23.0); delayed 19.5 stays masked
+        build_heating_zones(hass, entry)
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(zone_id="climate.lounge", target_temperature=20.5),
+        )
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(zone_id="climate.lounge", target_temperature=22.0),
+        )
+        range_ac.attributes["target_temp_low"] = 19.5
+        assert (
+            build_heating_zones(hass, entry)["climate.lounge"].target_temperature
+            == 22.0
+        )
+
+        # 2. Temperature-only scalar write while MQTT entity is off still dispatches
+        hass.services.async_call.reset_mock()
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(zone_id="climate.mqtt", target_temperature=21.0),
+        )
+        hass.services.async_call.assert_awaited_once_with(
+            "climate",
+            "set_temperature",
+            {"entity_id": "climate.mqtt", "temperature": 21.0},
+            blocking=True,
+        )
+
+        # 3. Rejected off -> heat_cool clears dependent setpoint rather than deferring
+        range_ac.state = "off"
+        range_ac.attributes["target_temp_low"] = None
+        range_ac.attributes["target_temp_high"] = None
+        hass.services.async_call = AsyncMock(side_effect=RuntimeError("mode failed"))
+        await async_handle_heating_command(
+            hass,
+            entry,
+            HeatingCommandData(
+                zone_id="climate.lounge",
+                system_mode="heat_cool",
+                target_temperature=23.0,
+            ),
+        )
+        assert "climate.lounge" not in entry.runtime_data.pending_heating_commands
+        for task_coro in scheduled_tasks:
+            task_coro.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,15 +76,6 @@ _DEFAULT_STEP = 0.5
 _DEFAULT_DEADBAND_SPAN = 2.0
 _COMMAND_GRACE_SECS = 15.0
 _FLOAT_TOL = 0.05
-_SUPPORTED_SYSTEM_MODES: tuple[str, ...] = (
-    HVACMode.HEAT,
-    HVACMode.COOL,
-    HVACMode.HEAT_COOL,
-    HVACMode.AUTO,
-    HVACMode.DRY,
-    HVACMode.FAN_ONLY,
-    HVACMode.OFF,
-)
 _DEFAULT_SYSTEM_MODES: tuple[str, ...] = (HVACMode.HEAT, HVACMode.OFF)
 _HEAT_ACTIVE_MODES: frozenset[str] = frozenset({"heat", "auto", "heat_cool"})
 _COOL_ACTIVE_MODES: frozenset[str] = frozenset({"cool", "auto", "heat_cool"})
@@ -324,15 +315,18 @@ def _can_set_temperature(
 def _resolve_pending_mode(
     raw_mode: HeatingSystemMode,
     pending: PendingZoneCommand | None,
+    *,
+    mutate: bool = True,
 ) -> tuple[HeatingSystemMode, bool]:
     """Resolve `system_mode` against `pending` and return `(mode, is_confirmed)`."""
     if pending is None or pending.system_mode is None:
         return raw_mode, True
     if raw_mode == pending.system_mode:
-        pending.system_mode = None
-        pending.prev_system_mode = None
+        if mutate:
+            pending.system_mode = None
+            pending.prev_system_mode = None
         return raw_mode, True
-    if pending.prev_system_mode in (raw_mode, "off"):
+    if not mutate or pending.prev_system_mode in (raw_mode, "off"):
         return pending.system_mode, False  # type: ignore[return-value]
     pending.system_mode = None
     pending.prev_system_mode = None
@@ -342,14 +336,19 @@ def _resolve_pending_mode(
 def _reconcile_str_field(
     incoming: str | None,
     pending_val: str | None,
-    prev_val: str | None,
-) -> tuple[str | None, str | None, str | None]:
-    """Return `(resolved, next_pending, next_prev)` for a string field."""
+    prev_vals: set[str | None],
+    *,
+    mutate: bool = True,
+) -> tuple[str | None, str | None]:
+    """Return `(resolved, next_pending)` for a string field."""
     if pending_val is None or incoming == pending_val:
-        return incoming, None, None
-    if incoming == prev_val:
-        return pending_val, pending_val, prev_val
-    return incoming, None, None
+        if mutate:
+            prev_vals.clear()
+        return incoming, (None if mutate else pending_val)
+    if not mutate or incoming in prev_vals:
+        return pending_val, pending_val
+    prev_vals.clear()
+    return incoming, None
 
 
 def _matches_any(val: float | None, candidates: tuple[float | None, ...]) -> bool:
@@ -364,6 +363,7 @@ def _matches_any(val: float | None, candidates: tuple[float | None, ...]) -> boo
 def _clear_pending_temp(pending: PendingZoneCommand) -> None:
     """Clear all target-temperature fields on `pending`."""
     pending.target_temperature = None
+    pending.deferred_temp_mode = None
     pending.expected_midpoint = None
     pending.expected_low = None
     pending.expected_high = None
@@ -378,8 +378,9 @@ def _reconcile_target_temperature(
     *,
     raw_low: float | None,
     raw_high: float | None,
+    mutate: bool = True,
 ) -> float:
-    """Resolve `target_temperature` against `pending` and update `pending` in place."""
+    """Resolve `target_temperature` against `pending`."""
     if pending.target_temperature is None:
         return incoming_temp
 
@@ -388,6 +389,9 @@ def _reconcile_target_temperature(
         if pending.expected_midpoint is not None
         else pending.target_temperature
     )
+    if not mutate or pending.deferred_temp_mode is not None:
+        return expected
+
     if pending.expected_low is not None and pending.expected_high is not None:
         settled = _matches_any(raw_low, (pending.expected_low,)) and _matches_any(
             raw_high, (pending.expected_high,)
@@ -419,13 +423,40 @@ def _reconcile_target_temperature(
     return incoming_temp
 
 
+def _compute_grid_bounds(
+    raw_min: float,
+    raw_max: float,
+    step: float,
+) -> tuple[float, float]:
+    """Return `(min_grid, max_grid)` aligned inward onto `step`."""
+    min_temp, max_temp = (
+        (raw_min, raw_max) if raw_min <= raw_max else (raw_max, raw_min)
+    )
+    min_grid = round(math.ceil(min_temp / step) * step, 4)
+    max_grid = round(math.floor(max_temp / step) * step, 4)
+    return (min_grid, max_grid) if min_grid <= max_grid else (min_temp, max_temp)
+
+
+def _matches_commanded_range(
+    raw_low: float,
+    raw_high: float,
+    cmd_range: tuple[float, float] | None,
+) -> bool:
+    """Return True if `(raw_low, raw_high)` matches the last Tap-commanded bounds."""
+    if cmd_range is None:
+        return False
+    return math.isclose(raw_low, cmd_range[0], abs_tol=_FLOAT_TOL) and math.isclose(
+        raw_high, cmd_range[1], abs_tol=_FLOAT_TOL
+    )
+
+
 def _resolve_temperatures_and_bounds(
     entity_id: str,
     attrs: Mapping[str, Any],
     *,
     effective_mode: str,
     deadband_spans: dict[str, float] | None,
-    has_pending_range_temp: bool,
+    preserve_cached_span: bool,
 ) -> tuple[float, float, float, float, bool, float | None, float | None]:
     """Compute `(current_temp, target_temp, min_t, max_t, can_set, low, high)`."""
     supported_features = _parse_int(attrs.get(ATTR_SUPPORTED_FEATURES), 0)
@@ -484,21 +515,22 @@ def _resolve_temperatures_and_bounds(
             if math.isclose(raw_high, raw_low, abs_tol=1e-6)
             else max(_half_up_to_step(raw_high - raw_low, step), step)
         )
-        if not has_pending_range_temp and deadband_spans is not None:
+        if not preserve_cached_span and deadband_spans is not None:
             deadband_spans[entity_id] = live_span
-        span = cached_span if (has_pending_range_temp and cached_span) else live_span
+        span = cached_span if (preserve_cached_span and cached_span) else live_span
         target_temp = _half_up_to_step((raw_low + raw_high) / 2.0, _DEFAULT_STEP)
     else:
         span = cached_span if cached_span is not None else _DEFAULT_DEADBAND_SPAN
         target_temp = raw_current if raw_current is not None else _DEFAULT_TEMP
     current_temp = raw_current if raw_current is not None else target_temp
 
-    cand_min = math.ceil((min_temp + span / 2.0) * 2.0) / 2.0
-    cand_max = math.floor((max_temp - span / 2.0) * 2.0) / 2.0
+    min_grid, max_grid = _compute_grid_bounds(min_temp, max_temp, step)
+    cand_min = math.ceil((min_grid + span / 2.0) * 2.0) / 2.0
+    cand_max = math.floor((max_grid - span / 2.0) * 2.0) / 2.0
     if cand_min <= cand_max:
         effective_min, effective_max = cand_min, cand_max
     else:
-        collapsed = _half_up_to_step((min_temp + max_temp) / 2.0, _DEFAULT_STEP)
+        collapsed = _half_up_to_step((min_grid + max_grid) / 2.0, _DEFAULT_STEP)
         effective_min, effective_max = collapsed, collapsed
     return (
         current_temp,
@@ -517,6 +549,7 @@ def _apply_pending_fields(
     *,
     raw_low: float | None,
     raw_high: float | None,
+    mutate: bool,
 ) -> HeatingZoneData:
     """Reconcile non-mode pending fields on `zone`."""
     if pending is None:
@@ -526,17 +559,25 @@ def _apply_pending_fields(
         pending,
         raw_low=raw_low,
         raw_high=raw_high,
+        mutate=mutate,
     )
-    zone.preset_mode, pending.preset_mode, pending.prev_preset_mode = (
-        _reconcile_str_field(
-            zone.preset_mode, pending.preset_mode, pending.prev_preset_mode
-        )
+    zone.preset_mode, pending.preset_mode = _reconcile_str_field(
+        zone.preset_mode,
+        pending.preset_mode,
+        pending.prev_preset_modes,
+        mutate=mutate,
     )
-    zone.fan_mode, pending.fan_mode, pending.prev_fan_mode = _reconcile_str_field(
-        zone.fan_mode, pending.fan_mode, pending.prev_fan_mode
+    zone.fan_mode, pending.fan_mode = _reconcile_str_field(
+        zone.fan_mode,
+        pending.fan_mode,
+        pending.prev_fan_modes,
+        mutate=mutate,
     )
-    zone.swing_mode, pending.swing_mode, pending.prev_swing_mode = _reconcile_str_field(
-        zone.swing_mode, pending.swing_mode, pending.prev_swing_mode
+    zone.swing_mode, pending.swing_mode = _reconcile_str_field(
+        zone.swing_mode,
+        pending.swing_mode,
+        pending.prev_swing_modes,
+        mutate=mutate,
     )
     return zone
 
@@ -579,24 +620,28 @@ def _build_zone_from_state(
         actively_heating=raw_heating,
         system_modes=system_modes,
     )
-    resolved_mode, mode_confirmed = _resolve_pending_mode(raw_mode, pending)
-    if (
-        not mode_confirmed
-        and raw_mode == "auto"
-        and resolved_mode
-        in {
-            "heat",
-            "cool",
-            "heat_cool",
-        }
-    ):
-        force_editable = True
-    else:
-        force_editable = False
-
-    has_pending_range_temp = bool(
-        pending is not None and pending.target_temperature is not None
+    mutate_pending = pending is None or pending.in_flight_count <= 0
+    resolved_mode, mode_confirmed = _resolve_pending_mode(
+        raw_mode, pending, mutate=mutate_pending
     )
+    preserve_span = bool(pending is not None and pending.target_temperature is not None)
+    if (
+        not preserve_span
+        and deadband_spans is not None
+        and entity_id in deadband_spans
+        and deadband_spans.get(f"__cmd_low__:{entity_id}") is not None
+    ):
+        raw_low_attr = _parse_optional_float(attrs.get(ATTR_TARGET_TEMP_LOW))
+        raw_high_attr = _parse_optional_float(attrs.get(ATTR_TARGET_TEMP_HIGH))
+        cmd_pair = (
+            deadband_spans.get(f"__cmd_low__:{entity_id}", -999.0),
+            deadband_spans.get(f"__cmd_high__:{entity_id}", -999.0),
+        )
+        preserve_span = bool(
+            raw_low_attr is not None
+            and raw_high_attr is not None
+            and _matches_commanded_range(raw_low_attr, raw_high_attr, cmd_pair)
+        )
     (
         current_temp,
         target_temp,
@@ -610,7 +655,7 @@ def _build_zone_from_state(
         attrs,
         effective_mode=resolved_mode,
         deadband_spans=deadband_spans,
-        has_pending_range_temp=has_pending_range_temp,
+        preserve_cached_span=preserve_span,
     )
 
     actively_heating = (
@@ -635,7 +680,7 @@ def _build_zone_from_state(
         is_this_room=is_this_room,
         min_temp=effective_min,
         max_temp=effective_max,
-        can_set_temperature=True if force_editable else can_set_temp,
+        can_set_temperature=can_set_temp,
         system_modes=system_modes,
         preset_mode=_parse_non_empty_str(attrs.get(ATTR_PRESET_MODE)),
         preset_modes=_parse_str_list(attrs.get(ATTR_PRESET_MODES)),
@@ -649,6 +694,7 @@ def _build_zone_from_state(
         pending,
         raw_low=raw_low,
         raw_high=raw_high,
+        mutate=mutate_pending,
     )
     LOGGER.debug(
         "Built zone %s: state=%r -> mode=%r (modes=%s, fan=%r, swing=%r, set_temp=%s)",
@@ -677,7 +723,7 @@ def _is_pending_empty(cmd: PendingZoneCommand) -> bool:
 def _get_active_pending_commands(
     entry: TewkeConfigEntry,
 ) -> dict[str, PendingZoneCommand]:
-    """Return unexpired, non-empty pending Tap commands for the entry."""
+    """Return unexpired or actively running pending Tap commands for the entry."""
     runtime_data = getattr(entry, "runtime_data", None)
     raw = getattr(runtime_data, "pending_heating_commands", None)
     if not isinstance(raw, dict):
@@ -686,7 +732,8 @@ def _get_active_pending_commands(
     stale = [
         zid
         for zid, cmd in raw.items()
-        if cmd.expires_at <= now or _is_pending_empty(cmd)
+        if cmd.in_flight_count <= 0
+        and (cmd.expires_at <= now or _is_pending_empty(cmd))
     ]
     for zid in stale:
         raw.pop(zid, None)
@@ -698,6 +745,15 @@ def _get_deadband_spans(entry: TewkeConfigEntry) -> dict[str, float] | None:
     runtime_data = getattr(entry, "runtime_data", None)
     spans = getattr(runtime_data, "zone_deadband_spans", None)
     return spans if isinstance(spans, dict) else None
+
+
+def _get_commanded_ranges(
+    entry: TewkeConfigEntry,
+) -> dict[str, tuple[float, float]] | None:
+    """Return the per-zone last Tap-commanded `(low, high)` cache if available."""
+    runtime_data = getattr(entry, "runtime_data", None)
+    ranges = getattr(runtime_data, "zone_commanded_ranges", None)
+    return ranges if isinstance(ranges, dict) else None
 
 
 def _get_zone_lock(entry: TewkeConfigEntry, zone_id: str) -> asyncio.Lock | None:
@@ -785,17 +841,36 @@ def _adopt_tap_zones_if_unconfigured(
     return valid_entities
 
 
+def _merge_prev_set(
+    new_cmd_val: str | None,
+    current_val: str | None,
+    existing_pending_val: str | None,
+    existing_prev_set: set[str | None] | None,
+) -> set[str | None]:
+    """Build the eligible baseline set when updating or retaining a pending string."""
+    if new_cmd_val is None:
+        return set(existing_prev_set) if existing_prev_set else set()
+    merged: set[str | None] = {current_val}
+    if existing_pending_val is not None:
+        merged.add(existing_pending_val)
+        if existing_prev_set:
+            merged.update(existing_prev_set)
+    return merged
+
+
 def _record_pending_command(
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
     command: HeatingCommandData,
-) -> None:
+) -> PendingZoneCommand | None:
     """Record a Tap command so stale HA states do not echo back during execution."""
     runtime_data = getattr(entry, "runtime_data", None)
     pending_map = getattr(runtime_data, "pending_heating_commands", None)
     if not isinstance(pending_map, dict):
-        return
+        return None
 
+    active = _get_active_pending_commands(entry)
+    existing = active.get(command.zone_id)
     raw_state = hass.states.get(command.zone_id)
     raw_attrs = raw_state.attributes if raw_state is not None else {}
     raw_low = _parse_optional_float(raw_attrs.get(ATTR_TARGET_TEMP_LOW))
@@ -805,18 +880,15 @@ def _record_pending_command(
         command.zone_id,
         raw_state,
         is_this_room=False,
+        pending=existing,
         deadband_spans=_get_deadband_spans(entry),
     )
-    active = _get_active_pending_commands(entry)
-    existing = active.get(command.zone_id)
     has_prev_mode = existing is not None and existing.system_mode is not None
     has_prev_temp = existing is not None and existing.target_temperature is not None
-    has_prev_preset = existing is not None and existing.preset_mode is not None
-    has_prev_fan = existing is not None and existing.fan_mode is not None
-    has_prev_swing = existing is not None and existing.swing_mode is not None
 
-    pending_map[command.zone_id] = PendingZoneCommand(
+    recorded = PendingZoneCommand(
         expires_at=time.monotonic() + _COMMAND_GRACE_SECS,
+        in_flight_count=(existing.in_flight_count if existing is not None else 0) + 1,
         system_mode=command.system_mode
         if command.system_mode is not None
         else (existing.system_mode if existing else None),
@@ -828,6 +900,9 @@ def _record_pending_command(
         target_temperature=command.target_temperature
         if command.target_temperature is not None
         else (existing.target_temperature if existing else None),
+        deferred_temp_mode=None
+        if command.target_temperature is not None
+        else (existing.deferred_temp_mode if existing else None),
         expected_midpoint=None
         if command.target_temperature is not None
         else (existing.expected_midpoint if existing else None),
@@ -859,33 +934,40 @@ def _record_pending_command(
         preset_mode=command.preset_mode
         if command.preset_mode is not None
         else (existing.preset_mode if existing else None),
-        prev_preset_mode=(
-            existing.prev_preset_mode
-            if (command.preset_mode is None or has_prev_preset) and existing
-            else (current_zone.preset_mode if command.preset_mode is not None else None)
+        prev_preset_modes=_merge_prev_set(
+            command.preset_mode,
+            current_zone.preset_mode,
+            existing.preset_mode if existing else None,
+            existing.prev_preset_modes if existing else None,
         ),
         fan_mode=command.fan_mode
         if command.fan_mode is not None
         else (existing.fan_mode if existing else None),
-        prev_fan_mode=(
-            existing.prev_fan_mode
-            if (command.fan_mode is None or has_prev_fan) and existing
-            else (current_zone.fan_mode if command.fan_mode is not None else None)
+        prev_fan_modes=_merge_prev_set(
+            command.fan_mode,
+            current_zone.fan_mode,
+            existing.fan_mode if existing else None,
+            existing.prev_fan_modes if existing else None,
         ),
         swing_mode=command.swing_mode
         if command.swing_mode is not None
         else (existing.swing_mode if existing else None),
-        prev_swing_mode=(
-            existing.prev_swing_mode
-            if (command.swing_mode is None or has_prev_swing) and existing
-            else (current_zone.swing_mode if command.swing_mode is not None else None)
+        prev_swing_modes=_merge_prev_set(
+            command.swing_mode,
+            current_zone.swing_mode,
+            existing.swing_mode if existing else None,
+            existing.prev_swing_modes if existing else None,
         ),
     )
+    pending_map[command.zone_id] = recorded
+    return recorded
 
 
 def _schedule_reconcile_push(
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
+    *,
+    force_immediate_if_empty: bool = False,
 ) -> None:
     """Schedule a post-command reconciliation push at the earliest grace expiry."""
     runtime_data = getattr(entry, "runtime_data", None)
@@ -899,12 +981,17 @@ def _schedule_reconcile_push(
         runtime_data.heating_reconcile_unsub = None
 
     active_pending = _get_active_pending_commands(entry)
-    if not active_pending or not hasattr(hass, "loop"):
+    if not active_pending:
+        if force_immediate_if_empty and hasattr(hass, "async_create_task"):
+            hass.async_create_task(async_push_heating_state(hass, entry))
+        return
+    settled_cmds = [c for c in active_pending.values() if c.in_flight_count <= 0]
+    if not settled_cmds or not hasattr(hass, "loop"):
         return
 
     delay = max(
         0.1,
-        min(cmd.expires_at for cmd in active_pending.values()) - time.monotonic() + 0.1,
+        min(cmd.expires_at for cmd in settled_cmds) - time.monotonic() + 0.1,
     )
 
     @callback
@@ -959,8 +1046,8 @@ async def _async_call_climate_service(
     hass: HomeAssistant,
     service: str,
     data: dict[str, Any],
-) -> None:
-    """Call a single Home Assistant climate service, logging any error."""
+) -> bool:
+    """Call a single Home Assistant climate service, returning True on success."""
     try:
         await hass.services.async_call(
             CLIMATE_DOMAIN,
@@ -974,6 +1061,55 @@ async def _async_call_climate_service(
             service,
             data,
         )
+        return False
+    return True
+
+
+def _resolve_command_span(
+    entry: TewkeConfigEntry,
+    zone_id: str,
+    raw_low: float | None,
+    raw_high: float | None,
+    step: float,
+) -> float:
+    """Resolve the nominal deadband span for an outbound range command."""
+    deadband_spans = _get_deadband_spans(entry)
+    cached_span = deadband_spans.get(zone_id) if deadband_spans is not None else None
+    cmd_ranges = _get_commanded_ranges(entry)
+    cmd_range = cmd_ranges.get(zone_id) if cmd_ranges is not None else None
+    pending_cmd = _get_active_pending_commands(entry).get(zone_id)
+    has_unsettled_or_commanded = bool(
+        (
+            raw_low is not None
+            and raw_high is not None
+            and _matches_commanded_range(raw_low, raw_high, cmd_range)
+        )
+        or (
+            pending_cmd is not None
+            and (
+                pending_cmd.expected_low is not None
+                or (
+                    raw_low is not None
+                    and raw_high is not None
+                    and pending_cmd.prev_low is not None
+                    and pending_cmd.prev_high is not None
+                    and math.isclose(raw_low, pending_cmd.prev_low, abs_tol=_FLOAT_TOL)
+                    != math.isclose(raw_high, pending_cmd.prev_high, abs_tol=_FLOAT_TOL)
+                )
+            )
+        )
+    )
+    if has_unsettled_or_commanded and cached_span is not None:
+        span = cached_span
+    elif raw_low is not None and raw_high is not None and raw_high > raw_low:
+        span = max(_half_up_to_step(raw_high - raw_low, step), step)
+    elif cached_span is not None:
+        span = cached_span
+    else:
+        span = _DEFAULT_DEADBAND_SPAN
+    if deadband_spans is not None:
+        deadband_spans[zone_id] = span
+    return span
 
 
 def _build_set_temperature_payload(
@@ -988,7 +1124,6 @@ def _build_set_temperature_payload(
     if not math.isfinite(target_temp) or effective_mode in (
         HVACMode.OFF,
         HVACMode.FAN_ONLY,
-        HVACMode.DRY,
     ):
         return None, None, None, None
 
@@ -1025,35 +1160,40 @@ def _build_set_temperature_payload(
             None,
         )
 
-    raw_min_val = _parse_float(attrs.get(ATTR_MIN_TEMP), _DEFAULT_MIN_TEMP)
-    raw_max_val = _parse_float(attrs.get(ATTR_MAX_TEMP), _DEFAULT_MAX_TEMP)
-    raw_min, raw_max = (
-        (raw_min_val, raw_max_val)
-        if raw_min_val <= raw_max_val
-        else (raw_max_val, raw_min_val)
-    )
+    raw_min = _parse_float(attrs.get(ATTR_MIN_TEMP), _DEFAULT_MIN_TEMP)
+    raw_max = _parse_float(attrs.get(ATTR_MAX_TEMP), _DEFAULT_MAX_TEMP)
     step = _parse_float(attrs.get(ATTR_TARGET_TEMP_STEP), _DEFAULT_STEP)
     if step <= 0:
         step = _DEFAULT_STEP
+    min_grid, max_grid = _compute_grid_bounds(raw_min, raw_max, step)
 
-    min_grid = round(math.ceil(raw_min / step) * step, 4)
-    max_grid = round(math.floor(raw_max / step) * step, 4)
-    if min_grid > max_grid:
-        min_grid, max_grid = raw_min, raw_max
-
-    deadband_spans = _get_deadband_spans(entry)
-    if raw_low is not None and raw_high is not None and raw_high > raw_low:
-        span = max(_half_up_to_step(raw_high - raw_low, step), step)
-    elif deadband_spans is not None and zone_id in deadband_spans:
-        span = deadband_spans[zone_id]
-    else:
-        span = _DEFAULT_DEADBAND_SPAN
-
-    span = min(span, max(0.0, max_grid - min_grid))
+    span = min(
+        _resolve_command_span(entry, zone_id, raw_low, raw_high, step),
+        max(0.0, max_grid - min_grid),
+    )
     low = _half_down_to_step(target_temp - span / 2.0, step)
     low = min(max(low, min_grid), max(min_grid, max_grid - span))
-    high = min(max_grid, _half_up_to_step(low + span, step))
+    base_high = min(max_grid, _half_up_to_step(low + span, step))
+    base_mid = _half_up_to_step((low + base_high) / 2.0, _DEFAULT_STEP)
+    mirror_high = _half_up_to_step(2.0 * target_temp - low, step)
+    if (
+        not math.isclose(base_mid, target_temp, abs_tol=_FLOAT_TOL)
+        and mirror_high > base_high
+        and mirror_high <= max_grid
+        and math.isclose((low + mirror_high) / 2.0, target_temp, abs_tol=_FLOAT_TOL)
+    ):
+        high = mirror_high
+    else:
+        high = base_high
     high = max(high, low)
+
+    cmd_ranges = _get_commanded_ranges(entry)
+    if cmd_ranges is not None:
+        cmd_ranges[zone_id] = (round(low, 2), round(high, 2))
+    deadband_spans = _get_deadband_spans(entry)
+    if deadband_spans is not None:
+        deadband_spans[f"__cmd_low__:{zone_id}"] = round(low, 2)
+        deadband_spans[f"__cmd_high__:{zone_id}"] = round(high, 2)
 
     expected_midpoint = _half_up_to_step((low + high) / 2.0, _DEFAULT_STEP)
     LOGGER.debug(
@@ -1077,43 +1217,159 @@ def _build_set_temperature_payload(
     )
 
 
+def _refresh_pending_temp_baselines(
+    pending: PendingZoneCommand,
+    state: Any,
+    *,
+    is_range: bool,
+) -> None:
+    """Refresh `prev_*` temperature baselines from `state` once mode is active."""
+    if state is None:
+        return
+    attrs = state.attributes
+    if is_range:
+        cur_low = _parse_optional_float(attrs.get(ATTR_TARGET_TEMP_LOW))
+        cur_high = _parse_optional_float(attrs.get(ATTR_TARGET_TEMP_HIGH))
+        if cur_low is not None:
+            pending.prev_low = cur_low
+        if cur_high is not None:
+            pending.prev_high = cur_high
+        if cur_low is not None and cur_high is not None:
+            pending.prev_target_temperature = _half_up_to_step(
+                (cur_low + cur_high) / 2.0, _DEFAULT_STEP
+            )
+    else:
+        cur_single = _parse_optional_float(attrs.get(ATTR_TEMPERATURE))
+        if cur_single is not None:
+            pending.prev_target_temperature = cur_single
+
+
 async def _dispatch_target_temperature(
     hass: HomeAssistant,
     entry: TewkeConfigEntry,
-    command: HeatingCommandData,
+    zone_id: str,
+    target_temperature: float,
+    *,
+    requested_mode: str | None = None,
 ) -> None:
-    """Resolve and execute `climate.set_temperature` for `command` if applicable."""
-    if command.target_temperature is None:
-        return
-    state = hass.states.get(command.zone_id)
-    pending_cmd = _get_active_pending_commands(entry).get(command.zone_id)
+    """Resolve and execute (or defer) `climate.set_temperature` for `zone_id`."""
+    state = hass.states.get(zone_id)
+    pending_cmd = _get_active_pending_commands(entry).get(zone_id)
+    state_mode = (
+        _DIRECT_MODE_MAP.get(str(state.state).strip().lower(), "")
+        if state is not None
+        else ""
+    )
     effective_mode = (
-        command.system_mode
+        requested_mode
         or (pending_cmd.system_mode if pending_cmd is not None else None)
-        or (
-            _DIRECT_MODE_MAP.get(str(state.state).strip().lower(), "heat")
-            if state is not None
-            else "heat"
-        )
+        or (state_mode or "heat")
     )
     temp_payload, expected_mid, exp_low, exp_high = _build_set_temperature_payload(
         entry,
-        command.zone_id,
-        command.target_temperature,
+        zone_id,
+        target_temperature,
         effective_mode=effective_mode,
         state=state,
     )
     runtime_data = getattr(entry, "runtime_data", None)
     pending_map = getattr(runtime_data, "pending_heating_commands", None)
-    if isinstance(pending_map, dict) and command.zone_id in pending_map:
+    pending = pending_map.get(zone_id) if isinstance(pending_map, dict) else None
+    if pending is not None:
         if temp_payload is None:
-            _clear_pending_temp(pending_map[command.zone_id])
-        else:
-            pending_map[command.zone_id].expected_midpoint = expected_mid
-            pending_map[command.zone_id].expected_low = exp_low
-            pending_map[command.zone_id].expected_high = exp_high
+            _clear_pending_temp(pending)
+            return
+        pending.expected_midpoint = expected_mid
+        pending.expected_low = exp_low
+        pending.expected_high = exp_high
+        if exp_low is not None and state is not None and state_mode != effective_mode:
+            pending.deferred_temp_mode = effective_mode
+            return
+        pending.deferred_temp_mode = None
+        if state_mode == effective_mode:
+            _refresh_pending_temp_baselines(
+                pending, state, is_range=exp_low is not None
+            )
+
     if temp_payload is not None:
-        await _async_call_climate_service(hass, SERVICE_SET_TEMPERATURE, temp_payload)
+        accepted = await _async_call_climate_service(
+            hass, SERVICE_SET_TEMPERATURE, temp_payload
+        )
+        if not accepted and pending is not None:
+            _clear_pending_temp(pending)
+
+
+async def _dispatch_auxiliary_modes(
+    hass: HomeAssistant,
+    command: HeatingCommandData,
+    recorded: PendingZoneCommand | None,
+) -> None:
+    """Execute preset, fan, and swing service calls and clear rejected masks."""
+    if command.preset_mode is not None:
+        accepted = await _async_call_climate_service(
+            hass,
+            SERVICE_SET_PRESET_MODE,
+            {
+                ATTR_ENTITY_ID: command.zone_id,
+                ATTR_PRESET_MODE: command.preset_mode,
+            },
+        )
+        if not accepted and recorded is not None:
+            recorded.preset_mode = None
+            recorded.prev_preset_modes.clear()
+    if command.fan_mode is not None:
+        accepted = await _async_call_climate_service(
+            hass,
+            SERVICE_SET_FAN_MODE,
+            {
+                ATTR_ENTITY_ID: command.zone_id,
+                ATTR_FAN_MODE: command.fan_mode,
+            },
+        )
+        if not accepted and recorded is not None:
+            recorded.fan_mode = None
+            recorded.prev_fan_modes.clear()
+    if command.swing_mode is not None:
+        accepted = await _async_call_climate_service(
+            hass,
+            SERVICE_SET_SWING_MODE,
+            {
+                ATTR_ENTITY_ID: command.zone_id,
+                ATTR_SWING_MODE: command.swing_mode,
+            },
+        )
+        if not accepted and recorded is not None:
+            recorded.swing_mode = None
+            recorded.prev_swing_modes.clear()
+
+
+async def _flush_ready_deferred_temp(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    zone_id: str,
+    recorded: PendingZoneCommand | None,
+) -> None:
+    """Flush `deferred_temp_mode` if HA entered that mode during auxiliary calls."""
+    if (
+        recorded is None
+        or recorded.deferred_temp_mode is None
+        or recorded.target_temperature is None
+    ):
+        return
+    state = hass.states.get(zone_id)
+    state_mode = (
+        _DIRECT_MODE_MAP.get(str(state.state).strip().lower(), "")
+        if state is not None
+        else ""
+    )
+    if state_mode == recorded.deferred_temp_mode:
+        await _dispatch_target_temperature(
+            hass,
+            entry,
+            zone_id,
+            recorded.target_temperature,
+            requested_mode=state_mode,
+        )
 
 
 async def _execute_zone_command(
@@ -1123,13 +1379,13 @@ async def _execute_zone_command(
 ) -> None:
     """Execute the service sequence for a single `HeatingCommandData`."""
     runtime_data = getattr(entry, "runtime_data", None)
-    _record_pending_command(hass, entry, command)
+    recorded = _record_pending_command(hass, entry, command)
     if runtime_data is not None and hasattr(runtime_data, "heating_commands_in_flight"):
         runtime_data.heating_commands_in_flight += 1
 
     try:
         if command.system_mode is not None:
-            await _async_call_climate_service(
+            accepted = await _async_call_climate_service(
                 hass,
                 SERVICE_SET_HVAC_MODE,
                 {
@@ -1137,47 +1393,38 @@ async def _execute_zone_command(
                     ATTR_HVAC_MODE: command.system_mode,
                 },
             )
-        await _dispatch_target_temperature(hass, entry, command)
-        if command.preset_mode is not None:
-            await _async_call_climate_service(
+            if not accepted and recorded is not None:
+                recorded.system_mode = None
+                recorded.prev_system_mode = None
+        if command.target_temperature is not None:
+            await _dispatch_target_temperature(
                 hass,
-                SERVICE_SET_PRESET_MODE,
-                {
-                    ATTR_ENTITY_ID: command.zone_id,
-                    ATTR_PRESET_MODE: command.preset_mode,
-                },
+                entry,
+                command.zone_id,
+                command.target_temperature,
+                requested_mode=command.system_mode,
             )
-        if command.fan_mode is not None:
-            await _async_call_climate_service(
-                hass,
-                SERVICE_SET_FAN_MODE,
-                {
-                    ATTR_ENTITY_ID: command.zone_id,
-                    ATTR_FAN_MODE: command.fan_mode,
-                },
-            )
-        if command.swing_mode is not None:
-            await _async_call_climate_service(
-                hass,
-                SERVICE_SET_SWING_MODE,
-                {
-                    ATTR_ENTITY_ID: command.zone_id,
-                    ATTR_SWING_MODE: command.swing_mode,
-                },
-            )
+        await _dispatch_auxiliary_modes(hass, command, recorded)
+        await _flush_ready_deferred_temp(hass, entry, command.zone_id, recorded)
     finally:
         pending_map = getattr(runtime_data, "pending_heating_commands", None)
-        if isinstance(pending_map, dict) and command.zone_id in pending_map:
-            pending_map[command.zone_id].expires_at = (
-                time.monotonic() + _COMMAND_GRACE_SECS
-            )
+        if recorded is not None:
+            recorded.in_flight_count = max(0, recorded.in_flight_count - 1)
+            recorded.expires_at = time.monotonic() + _COMMAND_GRACE_SECS
+            if isinstance(pending_map, dict) and not _is_pending_empty(recorded):
+                pending_map[command.zone_id] = recorded
         if runtime_data is not None and hasattr(
             runtime_data, "heating_commands_in_flight"
         ):
             runtime_data.heating_commands_in_flight = max(
                 0, runtime_data.heating_commands_in_flight - 1
             )
-        _schedule_reconcile_push(hass, entry)
+        no_in_flight = getattr(runtime_data, "heating_commands_in_flight", 0) == 0
+        _schedule_reconcile_push(
+            hass,
+            entry,
+            force_immediate_if_empty=no_in_flight,
+        )
 
 
 async def async_handle_heating_command(
@@ -1200,6 +1447,87 @@ async def async_handle_heating_command(
             await _execute_zone_command(hass, entry, command)
     else:
         await _execute_zone_command(hass, entry, command)
+
+
+async def _async_apply_deferred_or_wake_retry(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    entity_id: str,
+    *,
+    wake_retry_mode: str | None,
+    apply_deferred_temp: bool,
+) -> None:
+    """Execute wake-up mode retry or deferred range setpoint, then push state."""
+    zone_lock = _get_zone_lock(entry, entity_id)
+    if zone_lock is not None:
+        async with zone_lock:
+            await _run_locked_state_followup(
+                hass,
+                entry,
+                entity_id,
+                wake_retry_mode=wake_retry_mode,
+                apply_deferred_temp=apply_deferred_temp,
+            )
+    else:
+        await _run_locked_state_followup(
+            hass,
+            entry,
+            entity_id,
+            wake_retry_mode=wake_retry_mode,
+            apply_deferred_temp=apply_deferred_temp,
+        )
+    await async_push_heating_state(hass, entry)
+
+
+async def _run_locked_state_followup(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    entity_id: str,
+    *,
+    wake_retry_mode: str | None,
+    apply_deferred_temp: bool,
+) -> None:
+    """Run serialised follow-up service calls if still current."""
+    pending = _get_active_pending_commands(entry).get(entity_id)
+    if pending is None:
+        return
+    pending.in_flight_count += 1
+    try:
+        if wake_retry_mode is not None and pending.system_mode == wake_retry_mode:
+            accepted = await _async_call_climate_service(
+                hass,
+                SERVICE_SET_HVAC_MODE,
+                {
+                    ATTR_ENTITY_ID: entity_id,
+                    ATTR_HVAC_MODE: wake_retry_mode,
+                },
+            )
+            if not accepted:
+                pending.system_mode = None
+                pending.prev_system_mode = None
+        if (
+            apply_deferred_temp
+            and pending.deferred_temp_mode is not None
+            and pending.target_temperature is not None
+        ):
+            state = hass.states.get(entity_id)
+            state_mode = (
+                _DIRECT_MODE_MAP.get(str(state.state).strip().lower(), "")
+                if state is not None
+                else ""
+            )
+            if state_mode == pending.deferred_temp_mode:
+                await _dispatch_target_temperature(
+                    hass,
+                    entry,
+                    entity_id,
+                    pending.target_temperature,
+                    requested_mode=state_mode,
+                )
+    finally:
+        pending.in_flight_count = max(0, pending.in_flight_count - 1)
+        pending.expires_at = time.monotonic() + _COMMAND_GRACE_SECS
+        _schedule_reconcile_push(hass, entry)
 
 
 def cancel_climate_state_listener(entry: TewkeConfigEntry) -> None:
@@ -1247,45 +1575,57 @@ def async_setup_climate_state_listener(
     def _async_on_climate_state_change(
         event: Event[EventStateChangedData],
     ) -> None:
-        if getattr(runtime_data, "heating_commands_in_flight", 0) > 0:
-            return
         entity_id = event.data.get("entity_id")
+        if not isinstance(entity_id, str):
+            return
+        pending = _get_active_pending_commands(entry).get(entity_id)
+        if pending is not None and pending.in_flight_count > 0:
+            return
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
-        pending_map = _get_active_pending_commands(entry)
-        pending = pending_map.get(entity_id) if isinstance(entity_id, str) else None
-        if (
-            pending is not None
-            and pending.system_mode not in (None, "off")
-            and old_state is not None
-            and old_state.state in (HVACMode.OFF, STATE_UNAVAILABLE, STATE_UNKNOWN)
-            and new_state is not None
-            and new_state.state
-            not in (
-                pending.system_mode,
-                HVACMode.OFF,
-                STATE_UNAVAILABLE,
-                STATE_UNKNOWN,
-            )
-        ):
-            target_mode = pending.system_mode
-            attrs = new_state.attributes
-            pending.prev_system_mode = _resolve_system_mode(
-                new_state.state,
-                actively_cooling=False,
-                actively_heating=False,
-                system_modes=_resolve_system_modes(attrs.get(ATTR_HVAC_MODES)),
-            )
+
+        wake_retry_mode: str | None = None
+        apply_deferred = False
+        if pending is not None and new_state is not None:
+            new_mapped = _DIRECT_MODE_MAP.get(str(new_state.state).strip().lower())
+            if (
+                pending.system_mode not in (None, "off")
+                and old_state is not None
+                and old_state.state in (HVACMode.OFF, STATE_UNAVAILABLE, STATE_UNKNOWN)
+                and new_state.state
+                not in (
+                    pending.system_mode,
+                    HVACMode.OFF,
+                    STATE_UNAVAILABLE,
+                    STATE_UNKNOWN,
+                )
+            ):
+                wake_retry_mode = pending.system_mode
+                attrs = new_state.attributes
+                hvac_action = str(attrs.get(ATTR_HVAC_ACTION) or "").strip().lower()
+                pending.prev_system_mode = _resolve_system_mode(
+                    new_state.state,
+                    actively_cooling=hvac_action == HVACAction.COOLING,
+                    actively_heating=hvac_action == HVACAction.HEATING,
+                    system_modes=_resolve_system_modes(attrs.get(ATTR_HVAC_MODES)),
+                )
+            if (
+                pending.deferred_temp_mode is not None
+                and new_mapped == pending.deferred_temp_mode
+            ):
+                apply_deferred = True
+
+        if wake_retry_mode is not None or apply_deferred:
             hass.async_create_task(
-                _async_call_climate_service(
+                _async_apply_deferred_or_wake_retry(
                     hass,
-                    SERVICE_SET_HVAC_MODE,
-                    {
-                        ATTR_ENTITY_ID: entity_id,
-                        ATTR_HVAC_MODE: target_mode,
-                    },
+                    entry,
+                    entity_id,
+                    wake_retry_mode=wake_retry_mode,
+                    apply_deferred_temp=apply_deferred,
                 )
             )
+            return
         hass.async_create_task(async_push_heating_state(hass, entry))
 
     entry.runtime_data.climate_unsub = async_track_state_change_event(

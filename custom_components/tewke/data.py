@@ -23,9 +23,11 @@ class PendingZoneCommand:
     """Tracks a recent Tap-originated command to prevent stale HA state echoes."""
 
     expires_at: float
+    in_flight_count: int = 0
     system_mode: str | None = None
     prev_system_mode: str | None = None
     target_temperature: float | None = None
+    deferred_temp_mode: str | None = None
     expected_midpoint: float | None = None
     expected_low: float | None = None
     expected_high: float | None = None
@@ -33,11 +35,11 @@ class PendingZoneCommand:
     prev_low: float | None = None
     prev_high: float | None = None
     preset_mode: str | None = None
-    prev_preset_mode: str | None = None
+    prev_preset_modes: set[str | None] = field(default_factory=set)
     fan_mode: str | None = None
-    prev_fan_mode: str | None = None
+    prev_fan_modes: set[str | None] = field(default_factory=set)
     swing_mode: str | None = None
-    prev_swing_mode: str | None = None
+    prev_swing_modes: set[str | None] = field(default_factory=set)
 
 
 @dataclass
@@ -58,4 +60,5 @@ class TewkeData:
         default_factory=dict
     )
     zone_deadband_spans: dict[str, float] = field(default_factory=dict)
+    zone_commanded_ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
     heating_zone_locks: dict[str, asyncio.Lock] = field(default_factory=dict)

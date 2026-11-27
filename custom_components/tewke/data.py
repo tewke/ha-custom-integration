@@ -19,6 +19,21 @@ type TewkeConfigEntry = ConfigEntry[TewkeData]
 
 
 @dataclass
+class ResourceHealthState:
+    """Observation health, grace-window, and retry state for one CoAP resource."""
+
+    desired: bool = False
+    active: bool = False
+    has_data: bool = False
+    unhealthy_since: float | None = None
+    attempt_count: int = 0
+    post_grace_attempts: int = 0
+    next_retry_at: float | None = None
+    wake_requested: bool = False
+    last_error: str | None = None
+
+
+@dataclass
 class PendingZoneCommand:
     """Tracks a recent Tap-originated command to prevent stale HA state echoes."""
 
@@ -53,6 +68,7 @@ class TewkeData:
     scene_control_types: dict[str, str]
     pending_scenes: dict[str, Scene] = field(default_factory=dict)
     observe_active: bool = False
+    resource_health: dict[str, ResourceHealthState] = field(default_factory=dict)
     initial_heating_sync_done: bool = False
     climate_unsub: Callable[[], None] | None = None
     heating_reconcile_unsub: Callable[[], None] | None = None

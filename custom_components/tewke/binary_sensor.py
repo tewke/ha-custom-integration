@@ -95,6 +95,7 @@ async def async_setup_entry(
 class TewkeBinarySensor(TewkeEntity, BinarySensorEntity):
     """A Tewke BME680 calibration status binary sensor."""
 
+    _resource_name = "sensors"
     entity_description: TewkeBinarySensorEntityDescription
 
     def __init__(
@@ -126,6 +127,18 @@ class TewkeScreenBinarySensor(TewkeEntity, BinarySensorEntity):
         """Initialise the screen sensor."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{self._hardware_id}_screen_on"
+
+    @property
+    def available(self) -> bool:
+        """Check `/radar` availability when supported, else fall back to `/config`."""
+        tap = self.coordinator.config_entry.runtime_data.tap
+        resources = getattr(tap, "resources", None)
+        resource_key = (
+            "radar"
+            if isinstance(resources, dict) and "radar" in resources
+            else "config"
+        )
+        return bool(self.coordinator.is_resource_available(resource_key))
 
     @property
     def is_on(self) -> bool | None:

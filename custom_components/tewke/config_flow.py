@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytewke
 import voluptuous as vol
+from aiocoap import Code as coapCode
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     ConfigFlow,
@@ -15,8 +16,10 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
-from pytewke.error import BasePyTewkeError
+from pytewke.data import Scene
+from pytewke.error import BasePyTewkeError, PyTewkeCoapError
 
 from .const import (
     CONF_CLIMATE_ENTITIES,
@@ -39,7 +42,6 @@ if TYPE_CHECKING:
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
-    from pytewke.data import Scene
 
     from .coordinator import TewkeCoordinator
 
@@ -221,17 +223,13 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
             await self._tap.close()
             self._tap = None
 
-    async def async_step_confirm_control_types(
-        self, user_input: dict[str, str] | None = None
-    ) -> ConfigFlowResult:
-        """Assign a Home Assistant platform type to each scene."""
-        tap = self._tap if self._tap is not None else pytewke.Tap(self._discovered_host)
-        self._tap = tap
-
+    async def _async_fetch_scenes_for_flow(
+        self, tap: pytewke.Tap
+    ) -> dict[str, Scene] | None:
+        """Discover resources and fetch scenes, tolerating offline 5.03/timeout."""
         try:
             if not tap.resources:
                 await tap.discover()
-            scenes = await tap.get_scenes()
         except (BasePyTewkeError, TimeoutError) as err:
             LOGGER.error(
                 "Error communicating with Tewke device at %s: %s",
@@ -239,9 +237,53 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 err,
             )
             await self._async_close_tap()
-            return self.async_abort(reason="cannot_connect")
+            return None
 
-        self._scenes = scenes
+        try:
+            return await tap.get_scenes()
+        except (PyTewkeCoapError, TimeoutError) as err:
+            if isinstance(err, TimeoutError) or (
+                err.response_code == coapCode.SERVICE_UNAVAILABLE
+            ):
+                LOGGER.warning(
+                    "Scenes unavailable on %s during config flow (%s); "
+                    "continuing with local setup",
+                    self._discovered_host,
+                    err,
+                )
+                return {}
+            LOGGER.error(
+                "Error communicating with Tewke device at %s: %s",
+                self._discovered_host,
+                err,
+            )
+            await self._async_close_tap()
+            return None
+        except BasePyTewkeError as err:
+            LOGGER.error(
+                "Error communicating with Tewke device at %s: %s",
+                self._discovered_host,
+                err,
+            )
+            await self._async_close_tap()
+            return None
+
+    async def async_step_confirm_control_types(
+        self, user_input: dict[str, str] | None = None
+    ) -> ConfigFlowResult:
+        """Assign a Home Assistant platform type to each scene."""
+        tap = self._tap if self._tap is not None else pytewke.Tap(self._discovered_host)
+        self._tap = tap
+
+        if user_input is None:
+            fetched_scenes = await self._async_fetch_scenes_for_flow(tap)
+            if fetched_scenes is None:
+                return self.async_abort(reason="cannot_connect")
+            scenes = fetched_scenes
+            self._scenes = scenes
+        else:
+            scenes = getattr(self, "_scenes", None) or {}
+
         LOGGER.debug("Discovered scenes: %s", scenes)
         label_to_id = _build_unique_scene_labels(scenes)
 
@@ -384,16 +426,12 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
                 if tap_heating.active and tap_heating.zones:
                     existing_entities = list(tap_heating.zones.keys())
                     existing_primary = next(
-                        (
-                            z.id
-                            for z in tap_heating.zones.values()
-                            if z.is_this_room
-                        ),
+                        (z.id for z in tap_heating.zones.values() if z.is_this_room),
                         None,
                     )
                     self._climate_entities = existing_entities
                     self._primary_climate_entity = existing_primary
-            except (BasePyTewkeError, TimeoutError):
+            except BasePyTewkeError, TimeoutError:
                 LOGGER.debug("Unable to read existing heating state from Tap")
 
         schema_fields: dict[Any, Any] = {
@@ -464,6 +502,50 @@ class TewkeConfigFlow(ConfigFlow, domain=DOMAIN):
 class TewkeOptionsFlow(OptionsFlow):
     """Handle options for the Tewke integration."""
 
+    def _resolve_fan_scenes(
+        self,
+        entry: ConfigEntry,
+        scenes: dict[str, Scene],
+        scene_control_types: dict[str, str],
+        disabled_scenes: list[str],
+        tap: pytewke.Tap | None,
+    ) -> dict[str, Scene]:
+        """Return enabled fan scenes, falling back to EntityRegistry names offline."""
+        fan_scenes = {
+            scene_id: scene
+            for scene_id, scene in scenes.items()
+            if scene_control_types.get(scene_id) == "fan"
+            and scene_id not in disabled_scenes
+        }
+        if fan_scenes:
+            return fan_scenes
+        configured_fan_ids = [
+            sid
+            for sid, stype in scene_control_types.items()
+            if stype == "fan" and sid not in disabled_scenes
+        ]
+        if not configured_fan_ids:
+            return fan_scenes
+        ent_reg = (
+            er.async_get(self.hass) if getattr(self, "hass", None) is not None else None
+        )
+        hardware_id = (
+            getattr(tap, "wall_dock_id", None) if tap is not None else None
+        ) or entry.unique_id
+        for sid in configured_fan_ids:
+            stored_name = sid
+            if ent_reg is not None and hardware_id:
+                ent_id = ent_reg.async_get_entity_id(
+                    "fan", DOMAIN, f"{hardware_id}_{sid}"
+                )
+                reg_entry = ent_reg.async_get(ent_id) if ent_id else None
+                if reg_entry is not None and reg_entry.original_name:
+                    stored_name = reg_entry.original_name
+            fan_scenes[sid] = Scene(
+                id=sid, name=stored_name, isActive=False, brightness=0
+            )
+        return fan_scenes
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -482,13 +564,9 @@ class TewkeOptionsFlow(OptionsFlow):
         scenes: dict[str, Scene] = (
             coordinator.data["scenes"] if coordinator and coordinator.data else {}
         )
-
-        fan_scenes = {
-            scene_id: scene
-            for scene_id, scene in scenes.items()
-            if scene_control_types.get(scene_id) == "fan"
-            and scene_id not in disabled_scenes
-        }
+        fan_scenes = self._resolve_fan_scenes(
+            entry, scenes, scene_control_types, disabled_scenes, tap
+        )
 
         if not fan_scenes and not supports_heating:
             return self.async_abort(reason="no_fan_scenes")
@@ -551,11 +629,7 @@ class TewkeOptionsFlow(OptionsFlow):
                 if tap_heating is not None and tap_heating.active and tap_heating.zones:
                     existing_entities = list(tap_heating.zones.keys())
                     existing_primary = next(
-                        (
-                            z.id
-                            for z in tap_heating.zones.values()
-                            if z.is_this_room
-                        ),
+                        (z.id for z in tap_heating.zones.values() if z.is_this_room),
                         None,
                     )
             schema_fields[

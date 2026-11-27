@@ -229,7 +229,7 @@ class TewkeNewSceneRepairFlow(RepairsFlow):
         self.entry.runtime_data.scene_control_types = new_control_types
 
         coordinator = self.entry.runtime_data.coordinator
-        scenes_all = coordinator.data.get("scenes_all", {})
+        scenes_all = coordinator.data.get("scenes_all") or {}
         configured_scenes = {
             sid: scene for sid, scene in scenes_all.items() if sid in new_control_types
         }

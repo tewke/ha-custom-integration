@@ -21,6 +21,8 @@ from homeassistant.components.light import ATTR_BRIGHTNESS, ColorMode, LightEnti
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
+from pytewke.data import Scene
 from pytewke.error import (
     PyTewkeCoapError,
     PyTewkeInvalidRequestError,
@@ -29,7 +31,7 @@ from pytewke.error import (
     PyTewkeUnknownError,
 )
 
-from .const import LOGGER
+from .const import CONF_DISABLED_SCENES, DOMAIN, LOGGER
 from .entity import TewkeEntity
 from .util import (
     _get_default_scene_fan_dimming,
@@ -38,13 +40,66 @@ from .util import (
 )
 
 if TYPE_CHECKING:
-    from pytewke.data import Scene
+    from collections.abc import Callable
+
+    from homeassistant.core import HomeAssistant
 
     from .coordinator import TewkeCoordinator
+    from .data import TewkeConfigEntry
+
+
+def build_configured_scene_entities[EntityT: TewkeSceneEntity](
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    platform_domain: str,
+    entity_factory: Callable[[Scene, bool], EntityT],
+) -> tuple[list[EntityT], set[str]]:
+    """Build configured scene entities, creating offline placeholders when needed."""
+    coordinator = entry.runtime_data.coordinator
+    scene_control_types = entry.runtime_data.scene_control_types
+    disabled_scenes: list[str] = entry.data.get(CONF_DISABLED_SCENES, [])
+    live_scenes = coordinator.data.get("scenes", {})
+    has_scene_data = coordinator.has_resource_data("scenes") is not False
+
+    entities: list[EntityT] = []
+    known_scene_ids: set[str] = set()
+    hardware_id = entry.runtime_data.tap.wall_dock_id or entry.unique_id
+    ent_reg: er.EntityRegistry | None = None
+
+    for scene_id, control_type in scene_control_types.items():
+        if control_type != platform_domain:
+            continue
+        scene = live_scenes.get(scene_id)
+        if scene is None:
+            if has_scene_data:
+                continue
+            if ent_reg is None:
+                ent_reg = er.async_get(hass)
+            stored_name = scene_id
+            if hardware_id and ent_reg is not None:
+                ent_id = ent_reg.async_get_entity_id(
+                    platform_domain, DOMAIN, f"{hardware_id}_{scene_id}"
+                )
+                if ent_id is not None:
+                    reg_entry = ent_reg.async_get(ent_id)
+                    if reg_entry is not None and reg_entry.original_name:
+                        stored_name = reg_entry.original_name
+            scene = Scene(
+                id=scene_id,
+                name=stored_name,
+                isActive=False,
+                brightness=0,
+            )
+        known_scene_ids.add(scene_id)
+        entities.append(entity_factory(scene, scene_id not in disabled_scenes))
+
+    return entities, known_scene_ids
 
 
 class TewkeSceneEntity(TewkeEntity):
     """A Tewke scene base entity."""
+
+    _resource_name = "scenes"
 
     def __init__(
         self,
@@ -80,7 +135,13 @@ class TewkeSceneEntity(TewkeEntity):
         if not super().available:
             return False
 
-        return self._scene_id in self.coordinator.data.get("scenes", {})
+        if self._scene_id in self.coordinator.data.get("scenes", {}):
+            return True
+        return (
+            self.coordinator.has_resource_data("scenes") is False
+            and self._scene_id
+            in self.coordinator.config_entry.runtime_data.scene_control_types
+        )
 
     @property
     def is_on(self) -> bool | None:

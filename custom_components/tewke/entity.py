@@ -20,6 +20,7 @@ class TewkeEntity(CoordinatorEntity[TewkeCoordinator]):
     """
 
     _attr_has_entity_name = True
+    _resource_name: str | None = None
 
     def __init__(self, coordinator: TewkeCoordinator) -> None:
         """Initialise the entity."""
@@ -39,3 +40,10 @@ class TewkeEntity(CoordinatorEntity[TewkeCoordinator]):
             sw_version=tap.tewke_os_version,
             suggested_area=entry.data.get("room_name"),
         )
+
+    @property
+    def available(self) -> bool:
+        """Return True when the backing CoAP resource (or device) is available."""
+        if self._resource_name is not None:
+            return bool(self.coordinator.is_resource_available(self._resource_name))
+        return bool(self.coordinator.is_device_reachable())

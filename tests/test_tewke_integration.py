@@ -4,12 +4,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from aiocoap import Code as coapCode
 from homeassistant.components.climate import ClimateEntityFeature
 from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.config_entries import SOURCE_RECONFIGURE
 from homeassistant.const import CONF_HOST, CONF_NAME, EntityCategory
 from homeassistant.core import EVENT_STATE_CHANGED, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
@@ -20,7 +23,10 @@ from pytewke.data import (
     EnergyOverrideData,
     HeatingCommandData,
     HeatingData,
+    ObservationStatus,
+    ObservationStatusEvent,
     RadarData,
+    ResourceInfo,
     Scene,
     SensorData,
     Target,
@@ -29,7 +35,11 @@ from pytewke.data import (
 from pytewke.error import PyTewkeCoapError, PyTewkeDiscoveryError
 
 from custom_components.tewke import async_reload_entry, async_setup_entry
-from custom_components.tewke.binary_sensor import TewkeScreenBinarySensor
+from custom_components.tewke.binary_sensor import (
+    BINARY_SENSOR_DESCRIPTIONS,
+    TewkeBinarySensor,
+    TewkeScreenBinarySensor,
+)
 from custom_components.tewke.button import TewkeRestartButton
 from custom_components.tewke.config_flow import (
     TewkeConfigFlow,
@@ -41,8 +51,11 @@ from custom_components.tewke.const import (
     CONF_PRIMARY_CLIMATE_ENTITY,
     DOMAIN,
 )
-from custom_components.tewke.coordinator import TewkeCoordinator
-from custom_components.tewke.data import TewkeData
+from custom_components.tewke.coordinator import (
+    TewkeCoordinator,
+    compute_recovery_delay,
+)
+from custom_components.tewke.data import ResourceHealthState, TewkeData
 from custom_components.tewke.diagnostics import async_get_config_entry_diagnostics
 from custom_components.tewke.heating import (
     async_handle_heating_command,
@@ -51,6 +64,7 @@ from custom_components.tewke.heating import (
     build_heating_zones,
     tap_supports_heating,
 )
+from custom_components.tewke.light import async_setup_entry as async_setup_light_entry
 from custom_components.tewke.number import TewkeEnergyOverrideNumber
 from custom_components.tewke.scene import (
     TewkeSceneFan,
@@ -59,9 +73,13 @@ from custom_components.tewke.scene import (
 )
 from custom_components.tewke.sensor import (
     CONFIG_SENSOR_DESCRIPTIONS,
+    ENERGY_SENSOR_DESCRIPTIONS,
     RADAR_SENSOR_DESCRIPTIONS,
+    SENSOR_DESCRIPTIONS,
     TewkeConfigSensor,
+    TewkeEnergySensor,
     TewkeRadarSensor,
+    TewkeSensor,
 )
 from custom_components.tewke.sensor import (
     async_setup_entry as async_setup_sensor_entry,
@@ -334,18 +352,28 @@ class TestSetupAndCoordinator(unittest.IsolatedAsyncioTestCase):
         await async_setup_observe(coordinator, hass, entry)
         sensor_cb = mock_tap.observe.call_args.kwargs["sensor_callback"]
 
-        coordinator.reset_observation_timeout.reset_mock()
+        coordinator.mark_resource_data_received.return_value = False
+        coordinator.mark_resource_data_received.reset_mock()
         coordinator.async_set_updated_data.reset_mock()
+        coordinator.async_update_listeners.reset_mock()
 
-        # Identical sensor data resets timeout without firing async_set_updated_data
+        # Identical sensor data records live receipt without pushing state
         sensor_cb(sensor)
-        coordinator.reset_observation_timeout.assert_called_once()
+        coordinator.mark_resource_data_received.assert_called_once_with("sensors")
         coordinator.async_set_updated_data.assert_not_called()
+        coordinator.async_update_listeners.assert_not_called()
 
-        # Updated sensor data fires both
+        # Identical sensor data when recovering from unavailable notifies listeners
+        coordinator.mark_resource_data_received.return_value = True
+        sensor_cb(sensor)
+        assert coordinator.mark_resource_data_received.call_count == 2
+        coordinator.async_update_listeners.assert_called_once()
+
+        # Updated sensor data fires async_set_updated_data
+        coordinator.mark_resource_data_received.return_value = False
         updated_sensor = sensor.model_copy(update={"iaq": 75})
         sensor_cb(updated_sensor)
-        assert coordinator.reset_observation_timeout.call_count == 2
+        assert coordinator.mark_resource_data_received.call_count == 3
         coordinator.async_set_updated_data.assert_called_once()
 
 
@@ -1435,6 +1463,656 @@ class TestHeatingBridgeAndFlows(unittest.IsolatedAsyncioTestCase):
         assert "climate.lounge" not in entry.runtime_data.pending_heating_commands
         for task_coro in scheduled_tasks:
             task_coro.close()
+
+
+class _FakeClock:
+    """Deterministic monotonic clock and `async_call_later` scheduler for tests."""
+
+    def __init__(self, initial: float = 1000.0) -> None:
+        self.now = initial
+        self._timers: list[list[object]] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def call_later(self, _hass: object, delay: float, job_or_cb: object) -> object:
+        entry: list[object] = [self.now + float(delay), job_or_cb, False]
+        self._timers.append(entry)
+
+        def _unsub() -> None:
+            entry[2] = True
+
+        return _unsub
+
+    def advance(self, seconds: float) -> None:
+        target = self.now + seconds
+        while True:
+            due = [
+                e
+                for e in self._timers
+                if not e[2] and float(e[0]) <= target + 1e-9  # type: ignore[arg-type]
+            ]
+            if not due:
+                break
+            due.sort(key=lambda e: float(e[0]))  # type: ignore[arg-type]
+            nxt = due[0]
+            nxt[2] = True
+            self.now = float(nxt[0])  # type: ignore[arg-type]
+            target_fn = getattr(nxt[1], "target", nxt[1])
+            target_fn(self.now)  # type: ignore[operator]
+        self.now = target
+
+
+def _sample_sensor(iaq: int = 40) -> SensorData:
+    return SensorData(
+        iaq=iaq,
+        rawGas=1000.0,
+        staticIaq=iaq,
+        iaqAccuracy=3,
+        rawHumidity=45.0,
+        rawPressure=101325.0,
+        runInStatus=True,
+        co2Equivalent=500,
+        gasPercentage=10,
+        rawTemperature=21.0,
+        breathVocEquivalent=0.5,
+        compensatedHumidity=45.0,
+        stabilisationStatus=True,
+        compensatedTemperature=21.0,
+    )
+
+
+class TestPerResourceAvailabilityAndRecovery(unittest.IsolatedAsyncioTestCase):
+    """Verify 5m grace caching, 30s -> 60s..900s backoff, /config wake, and boot."""
+
+    def _build_real_coordinator(
+        self,
+        clock: _FakeClock,
+        *,
+        scene_control_types: dict[str, str] | None = None,
+    ) -> tuple[MagicMock, MagicMock, MagicMock, TewkeCoordinator]:
+        hass = MagicMock()
+        hass.loop = asyncio.get_running_loop()
+        hass.async_create_task = asyncio.create_task
+        hass.config_entries.async_update_entry = MagicMock()
+        entry = _make_mock_entry(
+            scene_control_types=scene_control_types or {"s1": "light"}
+        )
+        mock_tap = MagicMock()
+        mock_tap.wall_dock_id = "dock_123"
+        mock_tap.tewke_os_version = "2.0.0"
+        mock_tap.resources = {
+            name: ResourceInfo(path=f"/{name}", rt=name, obs=True)
+            for name in ("scenes", "targets", "config", "sensors", "radar", "energy")
+        }
+
+        def _set_updated_data(self_coord: TewkeCoordinator, data: object) -> None:
+            self_coord.data = data  # type: ignore[assignment]
+            self_coord.last_update_success = True
+            self_coord.async_update_listeners()
+
+        with patch("homeassistant.helpers.frame.report_usage"):
+            coordinator = TewkeCoordinator(
+                hass=hass,
+                logger=MagicMock(),
+                name=DOMAIN,
+                call_later_fn=clock.call_later,  # type: ignore[arg-type]
+                monotonic_fn=clock.monotonic,
+            )
+        coordinator.async_set_updated_data = _set_updated_data.__get__(  # type: ignore[method-assign]
+            coordinator, TewkeCoordinator
+        )
+        coordinator.config_entry = entry
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=mock_tap,
+            coordinator=coordinator,
+            scene_control_types=dict(scene_control_types or {"s1": "light"}),
+        )
+        return hass, entry, mock_tap, coordinator
+
+    async def test_scenes_503_grace_window_and_post_grace_backoff(self) -> None:
+        """Scenes stay available for 5m at 30s retries despite 10s /sensors pushes."""
+        assert [compute_recovery_delay(t, n) for t, n in [(0.0, 0), (299.9, 0)]] == [
+            30.0,
+            30.0,
+        ]
+        assert [compute_recovery_delay(300.0, n) for n in range(6)] == [
+            60.0,
+            120.0,
+            240.0,
+            480.0,
+            900.0,
+            900.0,
+        ]
+
+        clock = _FakeClock()
+        hass, entry, mock_tap, coordinator = self._build_real_coordinator(clock)
+        s1 = Scene(id="s1", name="Movie", isActive=True, brightness=70)
+        t0 = Target(index=0, name="Desk", isDimmable=True, isOn=True, brightness=50)
+        all_res = ["config", "targets", "scenes", "sensors", "radar", "energy"]
+        coordinator.data = {
+            "scenes": {"s1": s1},
+            "scenes_all": {"s1": s1},
+            "targets": {0: t0},
+            "sensors": _sample_sensor(40),
+            "radar": RadarData(proximity="near", screenOn=True),
+            "energy": EnergyData(
+                power=10.0, actualPower=10.0, override=None, hasOverride=False
+            ),
+            "energy_override": None,
+            "config": ConfigData(
+                roomId="r1",
+                roomName="Office",
+                deviceName="Office Tap",
+                hardwareId="dock_123",
+                tewkeOsVersion="2.0.0",
+                availableResources=all_res,
+            ),
+            "heating": None,
+        }
+        for res in all_res:
+            coordinator.mark_resource_data_received(res)
+            entry.runtime_data.resource_health[res].desired = True
+        coordinator.handle_config_available_resources(coordinator.data["config"])
+
+        scene_light = TewkeSceneLight(coordinator, s1)
+        target_light = TewkeTargetLight(coordinator, t0)
+        retry_timestamps: list[float] = []
+
+        async def _fail_retry(res: str) -> None:
+            retry_timestamps.append(clock.now - 1000.0)
+            msg = f"coap://192.168.1.50/{res} 5.03"
+            raise PyTewkeCoapError(msg, coapCode.SERVICE_UNAVAILABLE)
+
+        mock_tap.retry_observe = AsyncMock(side_effect=_fail_retry)
+        mock_ent_reg = MagicMock()
+
+        with patch(
+            "custom_components.tewke.util.er.async_get", return_value=mock_ent_reg
+        ):
+            evict_msg = "coap://192.168.1.50/scenes 5.03"
+            coordinator.handle_observation_status(
+                ObservationStatusEvent(
+                    resource="scenes",
+                    status=ObservationStatus.UNAVAILABLE,
+                    error=PyTewkeCoapError(evict_msg, coapCode.SERVICE_UNAVAILABLE),
+                )
+            )
+            coordinator.handle_config_available_resources(
+                coordinator.data["config"].model_copy(
+                    update={
+                        "available_resources": [r for r in all_res if r != "scenes"]
+                    }
+                )
+            )
+
+            for step in range(29):
+                clock.advance(10.0)
+                await asyncio.sleep(0)
+                coordinator.mark_resource_data_received("sensors")
+                coordinator.async_set_updated_data(
+                    {**coordinator.data, "sensors": _sample_sensor(41 + step)}
+                )
+                assert (scene_light.available, target_light.available) == (True, True)
+
+            assert retry_timestamps == [float(30 * k) for k in range(1, 10)]
+            mock_ent_reg.async_remove.assert_not_called()
+
+            clock.advance(10.0)
+            await asyncio.sleep(0)
+            assert (scene_light.available, target_light.available) == (False, True)
+            mock_ent_reg.async_remove.assert_not_called()
+
+            for delta in (60.0, 120.0, 240.0, 480.0, 900.0, 900.0):
+                for _ in range(int(delta // 10)):
+                    clock.advance(10.0)
+                    await asyncio.sleep(0)
+                    coordinator.mark_resource_data_received("sensors")
+            assert retry_timestamps[9:] == [
+                300.0,
+                360.0,
+                480.0,
+                720.0,
+                1200.0,
+                2100.0,
+                3000.0,
+            ]
+
+            diag = await async_get_config_entry_diagnostics(hass, entry)
+            assert diag["device"]["wall_dock_id"] == "**REDACTED**"
+            scenes_diag = diag["device"]["resource_health"]["scenes"]
+            assert not scenes_diag["available"]
+            assert "192.168.1.50" not in (scenes_diag["last_error"] or "")
+
+        coordinator.cancel_observation_timeout()
+
+    async def test_mid_flight_config_wake_requests_immediate_followup(self) -> None:
+        """Edge-triggered /config push wakes unhealthy /scenes immediately."""
+        clock = _FakeClock()
+        _, entry, mock_tap, coordinator = self._build_real_coordinator(clock)
+        s1 = Scene(id="s1", name="Movie", isActive=True, brightness=70)
+        base_cfg = ConfigData(
+            roomId="r1",
+            roomName="Office",
+            deviceName="Office Tap",
+            hardwareId="dock_123",
+            tewkeOsVersion="2.0.0",
+            availableResources=["config", "targets"],
+        )
+        coordinator.data = {
+            "scenes": {"s1": s1},
+            "scenes_all": {"s1": s1},
+            "targets": {},
+            "sensors": None,
+            "radar": None,
+            "energy": None,
+            "energy_override": None,
+            "config": base_cfg,
+            "heating": None,
+        }
+        entry.runtime_data.resource_health["scenes"] = ResourceHealthState(
+            desired=True,
+            active=False,
+            has_data=True,
+            unhealthy_since=clock.now - 600.0,
+            post_grace_attempts=4,
+            next_retry_at=clock.now + 900.0,
+        )
+        coordinator.handle_config_available_resources(base_cfg)
+        scene_light = TewkeSceneLight(coordinator, s1)
+        assert not scene_light.available
+
+        in_flight_gate = asyncio.Event()
+        attempts_on_wake = 0
+
+        async def _mid_flight_then_recover(_res: str) -> None:
+            nonlocal attempts_on_wake
+            attempts_on_wake += 1
+            if attempts_on_wake == 1:
+                await in_flight_gate.wait()
+                err_msg = "raced"
+                raise TimeoutError(err_msg)
+            coordinator.mark_resource_data_received("scenes")
+            coordinator.handle_observation_status(
+                ObservationStatusEvent(
+                    resource="scenes", status=ObservationStatus.ACTIVE
+                )
+            )
+
+        mock_tap.retry_observe = AsyncMock(side_effect=_mid_flight_then_recover)
+        woke_cfg = base_cfg.model_copy(
+            update={"available_resources": ["config", "targets", "scenes"]}
+        )
+        coordinator.handle_config_available_resources(woke_cfg)
+        clock.advance(0.0)
+        await asyncio.sleep(0)
+
+        # Second edge while attempt 1 is still awaiting sets wake_requested.
+        coordinator._prev_available_resources = frozenset({"config", "targets"})
+        coordinator.handle_config_available_resources(woke_cfg)
+        in_flight_gate.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert attempts_on_wake == 2
+        assert scene_light.available
+        coordinator.cancel_observation_timeout()
+
+    async def test_cold_boot_scenes_503_preserves_registry_names_and_hydrates(
+        self,
+    ) -> None:
+        """Cold boot with /scenes 5.03 keeps stored names unavailable then hydrates."""
+        clock = _FakeClock()
+        hass, entry, mock_tap, coordinator = self._build_real_coordinator(
+            clock, scene_control_types={"s1": "light"}
+        )
+        t0 = Target(index=0, name="Ceiling", isDimmable=True, isOn=True, brightness=80)
+        mock_tap.close_observations = AsyncMock()
+        mock_tap.desired_observations = frozenset({"scenes", "targets", "config"})
+        mock_tap.active_observations = frozenset({"targets", "config"})
+        mock_tap.get_targets = AsyncMock(return_value={0: t0})
+        mock_tap.get_scenes = AsyncMock()
+        mock_tap.get_sensors = AsyncMock(return_value=_sample_sensor())
+        mock_tap.get_radar = AsyncMock(
+            return_value=RadarData(proximity="none", screenOn=False)
+        )
+        mock_tap.get_energy = AsyncMock(
+            return_value=EnergyData(
+                power=5.0, actualPower=5.0, override=None, hasOverride=False
+            )
+        )
+        mock_tap.get_energy_override = AsyncMock(return_value=None)
+        mock_tap.get_config = AsyncMock(
+            return_value=ConfigData(
+                roomId="r1",
+                roomName="Bedroom",
+                deviceName="Bedroom Tap",
+                hardwareId="dock_123",
+                tewkeOsVersion="2.0.0",
+                availableResources=["config", "targets"],
+            )
+        )
+
+        captured_scene_cb: list[object] = []
+
+        async def _fake_observe(**kwargs: object) -> None:
+            status_cb = kwargs["observation_status_callback"]
+            captured_scene_cb.append(kwargs["scene_callback"])
+            status_cb(  # type: ignore[operator]
+                ObservationStatusEvent(
+                    resource="scenes",
+                    status=ObservationStatus.UNAVAILABLE,
+                    error=PyTewkeCoapError("5.03", coapCode.SERVICE_UNAVAILABLE),
+                )
+            )
+            kwargs["target_callback"]({0: t0})  # type: ignore[operator]
+            status_cb(  # type: ignore[operator]
+                ObservationStatusEvent(
+                    resource="targets", status=ObservationStatus.ACTIVE
+                )
+            )
+            status_cb(  # type: ignore[operator]
+                ObservationStatusEvent(
+                    resource="config", status=ObservationStatus.ACTIVE
+                )
+            )
+
+        mock_tap.observe = AsyncMock(side_effect=_fake_observe)
+
+        data = await coordinator._async_update_data()
+        coordinator.data = data
+        mock_tap.get_scenes.assert_not_awaited()
+
+        mock_ent_reg = MagicMock()
+        mock_ent_reg.async_get_entity_id.return_value = "light.bedroom_evening_glow"
+        mock_ent_reg.async_get.return_value = SimpleNamespace(
+            original_name="Evening Glow"
+        )
+        added_entities: list[object] = []
+
+        with (
+            patch(
+                "custom_components.tewke.scene.er.async_get", return_value=mock_ent_reg
+            ),
+            patch(
+                "custom_components.tewke.light.async_dispatcher_connect",
+                return_value=lambda: None,
+            ),
+        ):
+            await async_setup_light_entry(hass, entry, added_entities.extend)
+
+        scene_entities = [e for e in added_entities if isinstance(e, TewkeSceneLight)]
+        target_entities = [e for e in added_entities if isinstance(e, TewkeTargetLight)]
+        assert len(scene_entities) == 1
+        assert len(target_entities) == 1
+        assert scene_entities[0].name == "Evening Glow"
+        assert not scene_entities[0].available
+        assert target_entities[0].available
+
+        # Hydrate when /scenes recovers!
+        with (
+            patch(
+                "custom_components.tewke.util.er.async_get", return_value=mock_ent_reg
+            ),
+            patch("custom_components.tewke.util.ir.async_delete_issue"),
+        ):
+            captured_scene_cb[0](  # type: ignore[operator]
+                {
+                    "s1": Scene(
+                        id="s1", name="Evening Glow", isActive=True, brightness=65
+                    )
+                }
+            )
+        assert scene_entities[0].available
+        assert scene_entities[0].is_on
+        coordinator.cancel_observation_timeout()
+
+    async def test_sensors_503_skips_watchdog_and_heating_recovery_pushes_state(
+        self,
+    ) -> None:
+        """Sensors 5.03 skips 30s teardown; active silence enters grace; HVAC syncs."""
+        clock = _FakeClock()
+        hass, entry, mock_tap, coordinator = self._build_real_coordinator(clock)
+        mock_tap.resources["heating"] = ResourceInfo(
+            path="/heating", rt="heating", obs=True
+        )
+        coordinator.data = {
+            "scenes": {},
+            "scenes_all": {},
+            "targets": {
+                0: Target(
+                    index=0, name="Main", isDimmable=True, isOn=False, brightness=0
+                )
+            },
+            "sensors": _sample_sensor(),
+            "radar": RadarData(proximity="near", screenOn=True),
+            "energy": EnergyData(
+                power=4.0, actualPower=4.0, override=None, hasOverride=False
+            ),
+            "energy_override": EnergyOverrideData(override=None, active=False),
+            "config": ConfigData(
+                roomId="r1",
+                roomName="Hall",
+                deviceName="Hall Tap",
+                hardwareId="dock_123",
+                tewkeOsVersion="2.0.0",
+                updateStatus=UpdateStatus.IDLE,
+            ),
+            "heating": HeatingData(active=False, zones={}),
+        }
+        for res in ("targets", "config", "radar", "energy", "heating"):
+            coordinator.mark_resource_data_received(res)
+            entry.runtime_data.resource_health[res].desired = True
+
+        # 1. Sensors UNAVAILABLE (BME680 warm-up): 60s silence keeps siblings active.
+        entry.runtime_data.resource_health["sensors"] = ResourceHealthState(
+            desired=True, active=False, has_data=False, unhealthy_since=clock.now
+        )
+        coordinator.reset_observation_timeout()
+        clock.advance(60.0)
+        assert entry.runtime_data.resource_health["targets"].active
+        assert entry.runtime_data.resource_health["radar"].active
+
+        # Per-entity availability matrix check across platforms.
+        bme_sensor = TewkeSensor(coordinator, SENSOR_DESCRIPTIONS[0])
+        bme_bin = TewkeBinarySensor(coordinator, BINARY_SENSOR_DESCRIPTIONS[0])
+        radar_sensor = TewkeRadarSensor(coordinator, RADAR_SENSOR_DESCRIPTIONS[0])
+        screen_bin = TewkeScreenBinarySensor(coordinator)
+        energy_sensor = TewkeEnergySensor(coordinator, ENERGY_SENSOR_DESCRIPTIONS[0])
+        config_sensor = TewkeConfigSensor(coordinator, CONFIG_SENSOR_DESCRIPTIONS[0])
+        override_num = TewkeEnergyOverrideNumber(coordinator)
+        restart_btn = TewkeRestartButton(coordinator)
+        assert not bme_sensor.available
+        assert not bme_bin.available
+        assert radar_sensor.available
+        assert screen_bin.available
+        assert energy_sensor.available
+        assert config_sensor.available
+        assert override_num.available
+        assert restart_btn.available
+
+        # 2. Active sensors + 30s total silence enters 5m grace window and retries.
+        udp_err = "udp dropped"
+        mock_tap.retry_observe = AsyncMock(side_effect=TimeoutError(udp_err))
+        coordinator.mark_resource_data_received("sensors")
+        assert bme_sensor.available
+        clock.advance(30.0)
+        await asyncio.sleep(0)
+        assert not entry.runtime_data.resource_health["targets"].active
+        assert radar_sensor.available
+        assert bme_sensor.available
+
+        # 3. Real Observe: 0 recovery order (payload before ACTIVE) resyncs once!
+        with patch(
+            "custom_components.tewke.coordinator.async_push_heating_state",
+            new=AsyncMock(),
+        ) as mock_push_heating:
+            coordinator.mark_resource_data_received("heating")
+            coordinator.handle_observation_status(
+                ObservationStatusEvent(
+                    resource="heating", status=ObservationStatus.ACTIVE
+                )
+            )
+            await asyncio.sleep(0)
+            mock_push_heating.assert_awaited_once_with(hass, entry)
+
+        coordinator.cancel_observation_timeout()
+
+    async def test_cold_boot_205_reconciles_scenes_and_unload_aborts_timers(
+        self,
+    ) -> None:
+        """Healthy 2.05 boot reconciles scenes; unload stops timer resurrection."""
+        clock = _FakeClock()
+        hass, entry, mock_tap, coordinator = self._build_real_coordinator(
+            clock, scene_control_types={"s_deleted": "light", "s_kept": "light"}
+        )
+        mock_tap.resources["energy"] = ResourceInfo(
+            path="/energy", rt="energy", obs=False
+        )
+        t0 = Target(index=0, name="Desk", isDimmable=True, isOn=True, brightness=50)
+        s_kept = Scene(id="s_kept", name="Kept", isActive=False, brightness=40)
+        s_new = Scene(id="s_new", name="Added Offline", isActive=True, brightness=90)
+        mock_tap.close_observations = AsyncMock()
+        mock_tap.desired_observations = frozenset({"scenes", "targets", "config"})
+        mock_tap.active_observations = frozenset({"scenes", "targets", "config"})
+        mock_tap.wall_dock = SimpleNamespace(
+            scenes={"s_kept": s_kept, "s_new": s_new}, scenes_loaded=True
+        )
+        mock_tap.get_targets = AsyncMock(return_value={0: t0})
+        for attr in ("get_sensors", "get_radar", "get_energy_override", "get_config"):
+            setattr(mock_tap, attr, AsyncMock(return_value=None))
+        mock_tap.get_energy = AsyncMock(
+            return_value=EnergyData(
+                power=8.0, actualPower=8.0, override=None, hasOverride=False
+            )
+        )
+
+        async def _healthy_observe(**kwargs: object) -> None:
+            status_cb = kwargs["observation_status_callback"]
+            kwargs["scene_callback"]({"s_kept": s_kept, "s_new": s_new})  # type: ignore[operator]
+            kwargs["target_callback"]({0: t0})  # type: ignore[operator]
+            for res in ("scenes", "targets"):
+                status_cb(  # type: ignore[operator]
+                    ObservationStatusEvent(
+                        resource=res, status=ObservationStatus.ACTIVE
+                    )
+                )
+
+        mock_tap.observe = AsyncMock(side_effect=_healthy_observe)
+        mock_ent_reg = MagicMock()
+        mock_ent_reg.async_get_entity_id.return_value = "light.deleted_scene"
+
+        with (
+            patch(
+                "custom_components.tewke.util.er.async_get", return_value=mock_ent_reg
+            ),
+            patch("custom_components.tewke.util.ir.async_create_issue") as mock_issue,
+        ):
+            data = await coordinator._async_update_data()
+            coordinator.data = data
+
+        mock_ent_reg.async_remove.assert_called_once_with("light.deleted_scene")
+        assert (set(data["scenes"]), "s_new" in entry.runtime_data.pending_scenes) == (
+            {"s_kept"},
+            True,
+        )
+        mock_issue.assert_called_once()
+
+        coordinator.mark_resource_data_received("energy")
+        entry.runtime_data.resource_health["sensors"] = ResourceHealthState(
+            desired=True,
+            active=False,
+            has_data=False,
+            unhealthy_since=clock.now,
+            next_retry_at=clock.now + 30.0,
+            last_error="coap://[fd00::abcd]:5683/sensors failed for dock_123",
+        )
+        diag = await async_get_config_entry_diagnostics(hass, entry)
+        assert diag["device"]["resource_health"]["energy"]["available"]
+        sanitised = diag["device"]["resource_health"]["sensors"]["last_error"] or ""
+        assert ("fd00::abcd" in sanitised, "dock_123" in sanitised) == (False, False)
+
+        hang_gate = asyncio.Event()
+
+        async def _hang(_r: str) -> None:
+            await hang_gate.wait()
+
+        mock_tap.retry_observe = AsyncMock(side_effect=_hang)
+        coordinator._reschedule_retry_timer()
+        clock.advance(30.0)
+        await asyncio.sleep(0)
+        assert "sensors" in coordinator._get_retry_tasks()
+
+        coordinator.cancel_observation_timeout()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert (coordinator._recovery_retry_unsub, coordinator._legacy_poll_unsub) == (
+            None,
+            None,
+        )
+
+    async def test_reconfigure_and_options_flow_during_scenes_503(self) -> None:
+        """Reconfigure and Options flows preserve scenes when /scenes returns 5.03."""
+        # 1. ConfigFlow reconfigure step tolerates 5.03 without wiping control types.
+        flow = TewkeConfigFlow()
+        flow.hass = MagicMock()
+        flow.context = {"source": SOURCE_RECONFIGURE}
+        flow._discovered_host = "192.168.1.50"
+        flow._discovered_name = "Office Tap"
+        flow._scene_control_types = {"s_fan": "fan"}
+        flow._disabled_scenes = ["s_disabled"]
+        flow._default_scene_fan_dimming = {"s_fan": 65}
+        mock_tap = MagicMock()
+        mock_tap.resources = {"config": MagicMock()}
+        mock_tap.get_scenes = AsyncMock(
+            side_effect=PyTewkeCoapError("5.03", coapCode.SERVICE_UNAVAILABLE)
+        )
+        flow._tap = mock_tap
+        flow._async_next_after_scenes = AsyncMock(return_value={"type": "create_entry"})  # type: ignore[method-assign]
+
+        res = await flow.async_step_confirm_control_types()
+        assert res["type"] == "create_entry"
+        assert flow._scene_control_types == {"s_fan": "fan"}
+        assert flow._disabled_scenes == ["s_disabled"]
+        assert flow._default_scene_fan_dimming == {"s_fan": 65}
+
+        # 2. OptionsFlow falls back to EntityRegistry names when scenes are offline.
+        entry = _make_mock_entry(scene_control_types={"s_fan": "fan"})
+        entry.data["default_scene_fan_dimming"] = {"s_fan": 70}
+        coordinator = MagicMock()
+        coordinator.data = {"scenes": {}}
+        entry.runtime_data = TewkeData(
+            host="192.168.1.50",
+            tap=MagicMock(wall_dock_id="dock_123", resources={}),
+            coordinator=coordinator,
+            scene_control_types={"s_fan": "fan"},
+        )
+        opt_flow = TewkeOptionsFlow()
+        opt_flow.hass = MagicMock()
+        mock_ent_reg = MagicMock()
+        mock_ent_reg.async_get_entity_id.return_value = "fan.office_ceiling_fan"
+        mock_ent_reg.async_get.return_value = SimpleNamespace(
+            original_name="Ceiling Fan"
+        )
+        with (
+            patch.object(
+                TewkeOptionsFlow,
+                "config_entry",
+                new_callable=unittest.mock.PropertyMock,
+                return_value=entry,
+            ),
+            patch(
+                "custom_components.tewke.config_flow.er.async_get",
+                return_value=mock_ent_reg,
+            ),
+        ):
+            form = await opt_flow.async_step_init()
+            assert form["type"] == "form"
+            submitted = await opt_flow.async_step_init({"Ceiling Fan": 85})
+            assert submitted["type"] == "create_entry"
+            assert submitted["data"]["default_scene_fan_dimming"] == {"s_fan": 85}
 
 
 if __name__ == "__main__":

@@ -269,6 +269,7 @@ async def async_setup_entry(
 class TewkeSensor(TewkeEntity, SensorEntity):
     """A Tewke BME680 / ambient-light sensor entity."""
 
+    _resource_name = "sensors"
     entity_description: TewkeSensorEntityDescription
 
     def __init__(
@@ -346,6 +347,7 @@ RADAR_SENSOR_DESCRIPTIONS: tuple[TewkeRadarSensorEntityDescription, ...] = (
 class TewkeRadarSensor(TewkeEntity, SensorEntity):
     """A Tewke radar proximity sensor entity."""
 
+    _resource_name = "radar"
     entity_description: TewkeRadarSensorEntityDescription
 
     def __init__(
@@ -400,6 +402,7 @@ ENERGY_SENSOR_DESCRIPTIONS: tuple[TewkeEnergySensorEntityDescription, ...] = (
 class TewkeEnergySensor(TewkeEntity, SensorEntity):
     """A Tewke power consumption sensor entity."""
 
+    _resource_name = "energy"
     entity_description: TewkeEnergySensorEntityDescription
 
     def __init__(
@@ -445,6 +448,7 @@ CONFIG_SENSOR_DESCRIPTIONS: tuple[TewkeConfigSensorEntityDescription, ...] = (
 class TewkeConfigSensor(TewkeEntity, SensorEntity):
     """A Tewke config-derived diagnostic sensor entity."""
 
+    _resource_name = "config"
     entity_description: TewkeConfigSensorEntityDescription
 
     def __init__(

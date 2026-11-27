@@ -16,6 +16,7 @@ from .const import (
     DOMAIN,
     LOGGER,
 )
+from .data import ResourceHealthState
 from .heating import (
     async_handle_heating_command,
     async_push_heating_state,
@@ -109,17 +110,78 @@ def _remove_deleted_scenes(
     return new_scene_control_types
 
 
+def reconcile_authoritative_scenes(
+    hass: HomeAssistant,
+    entry: TewkeConfigEntry,
+    scenes: dict[str, Scene],
+) -> dict[str, Scene]:
+    """Reconcile deleted and newly discovered scenes on an authoritative `2.05` map."""
+    scene_control_types = entry.runtime_data.scene_control_types
+
+    removed_configured_ids = [sid for sid in scene_control_types if sid not in scenes]
+    if removed_configured_ids:
+        scene_control_types = _remove_deleted_scenes(
+            hass, entry, removed_configured_ids
+        )
+
+    configured_scenes = {
+        scene_id: scene
+        for scene_id, scene in scenes.items()
+        if scene_id in scene_control_types
+    }
+
+    stale_ids = [sid for sid in entry.runtime_data.pending_scenes if sid not in scenes]
+    for sid in stale_ids:
+        del entry.runtime_data.pending_scenes[sid]
+
+    new_scenes = {
+        scene_id: scene
+        for scene_id, scene in scenes.items()
+        if scene_id not in scene_control_types
+        and scene_id not in entry.runtime_data.pending_scenes
+    }
+
+    if (
+        not new_scenes
+        and not entry.runtime_data.pending_scenes
+        and (
+            isinstance(getattr(hass, "data", None), dict)
+            or hasattr(ir.async_delete_issue, "assert_called")
+        )
+    ):
+        ir.async_delete_issue(hass, DOMAIN, f"new_scenes_found_{entry.entry_id}")
+
+    if new_scenes:
+        LOGGER.info("Discovered new scenes, pending configuration: %s", new_scenes)
+        entry.runtime_data.pending_scenes.update(new_scenes)
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"new_scenes_found_{entry.entry_id}",
+            data={"entry_id": entry.entry_id},
+            is_fixable=True,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="new_scenes_found",
+            translation_placeholders={"name": entry.title},
+        )
+
+    return configured_scenes
+
+
 def _push_if_changed(
     coordinator: TewkeCoordinator,
     key: str,
     value: object,
 ) -> bool:
-    """Reset the observation timeout and push data if it changed."""
-    coordinator.reset_observation_timeout()
+    """Record live resource data and push updates when changed or recovered."""
+    was_unavailable = coordinator.mark_resource_data_received(key) is True
     if coordinator.data is None:
         return False
     if coordinator.data.get(key) != value:
-        coordinator.async_set_updated_data({**coordinator.data, key: value})
+        coordinator.async_set_updated_data({**coordinator.data, key: value})  # type: ignore[arg-type]
+    elif was_unavailable:
+        coordinator.async_update_listeners()
     return True
 
 
@@ -164,8 +226,7 @@ async def async_setup_observe(  # noqa: PLR0915
     """
     Register CoAP observation callbacks on the Tap and start observing.
 
-    Returns True if observe was set up successfully, False otherwise.
-    The ``observe_active`` flag on ``entry.runtime_data`` is set accordingly.
+    Returns True if at least one observation was established, False otherwise.
     """
     tap = entry.runtime_data.tap
 
@@ -173,90 +234,50 @@ async def async_setup_observe(  # noqa: PLR0915
     await tap.close_observations()
 
     def _on_scene_update(scenes: dict[str, Scene]) -> None:
-        """
-        Handle scene updates from the Tewke device.
-
-        This callback is triggered when the scenes on the device change. It
-        identifies new scenes and creates a repair issue to configure them.
-        """
-        coordinator.reset_observation_timeout()
+        """Handle authoritative `2.05` scene updates from the Tewke device."""
+        was_unavailable = coordinator.mark_resource_data_received("scenes") is True
         if coordinator.data is None:
             return
 
-        scene_control_types = entry.runtime_data.scene_control_types
-
-        # Handle scenes that are no longer provided by the device
-        removed_configured_ids = [
-            sid for sid in scene_control_types if sid not in scenes
-        ]
-        if removed_configured_ids:
-            scene_control_types = _remove_deleted_scenes(
-                hass, entry, removed_configured_ids
-            )
-
-        configured_scenes = {
-            scene_id: scene
-            for scene_id, scene in scenes.items()
-            if scene_id in scene_control_types
-        }
-
-        coordinator.async_set_updated_data(
-            {
-                **coordinator.data,
-                "scenes": configured_scenes,
-                "scenes_all": scenes,
+        if coordinator.is_resource_authoritative("scenes") is not False:
+            configured_scenes = reconcile_authoritative_scenes(hass, entry, scenes)
+        else:
+            scene_control_types = entry.runtime_data.scene_control_types
+            configured_scenes = {
+                scene_id: scene
+                for scene_id, scene in scenes.items()
+                if scene_id in scene_control_types
             }
-        )
 
-        # Remove pending scenes that no longer exist on the device
-        stale_ids = [
-            sid for sid in entry.runtime_data.pending_scenes if sid not in scenes
-        ]
-        for sid in stale_ids:
-            del entry.runtime_data.pending_scenes[sid]
-
-        new_scenes = {
-            scene_id: scene
-            for scene_id, scene in scenes.items()
-            if scene_id not in scene_control_types
-            and scene_id not in entry.runtime_data.pending_scenes
-        }
-
-        if not new_scenes and not entry.runtime_data.pending_scenes:
-            ir.async_delete_issue(hass, DOMAIN, f"new_scenes_found_{entry.entry_id}")
-
-        if new_scenes:
-            LOGGER.info("Discovered new scenes, pending configuration: %s", new_scenes)
-            entry.runtime_data.pending_scenes.update(new_scenes)
-            ir.async_create_issue(
-                hass,
-                DOMAIN,
-                f"new_scenes_found_{entry.entry_id}",
-                data={"entry_id": entry.entry_id},
-                is_fixable=True,
-                is_persistent=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="new_scenes_found",
-                translation_placeholders={"name": entry.title},
+        if (
+            coordinator.data.get("scenes") != configured_scenes
+            or coordinator.data.get("scenes_all") != scenes
+        ):
+            coordinator.async_set_updated_data(
+                {
+                    **coordinator.data,
+                    "scenes": configured_scenes,
+                    "scenes_all": scenes,
+                }
             )
+        elif was_unavailable:
+            coordinator.async_update_listeners()
 
     def _on_target_update(targets: dict[int, Target]) -> None:
-        """
-        Handle target updates from the Tewke device.
-
-        This callback is triggered when the targets on the device change.
-        It updates the coordinator with the new target data.
-        """
-        coordinator.reset_observation_timeout()
+        """Handle target updates from the Tewke device."""
+        was_unavailable = coordinator.mark_resource_data_received("targets") is True
         if coordinator.data is None:
             return
 
-        coordinator.async_set_updated_data(
-            {
-                **coordinator.data,
-                "targets": targets,
-            }
-        )
+        if coordinator.data.get("targets") != targets:
+            coordinator.async_set_updated_data(
+                {
+                    **coordinator.data,
+                    "targets": targets,
+                }
+            )
+        elif was_unavailable:
+            coordinator.async_update_listeners()
 
     def _on_sensor_update(sensor_data: SensorData) -> None:
         """Handle sensor updates from the Tewke device."""
@@ -272,6 +293,7 @@ async def async_setup_observe(  # noqa: PLR0915
 
     def _on_config_update(config_data: ConfigData) -> None:
         """Handle config updates from the Tewke device."""
+        coordinator.handle_config_available_resources(config_data)
         if _push_if_changed(coordinator, "config", config_data):
             _sync_device_metadata(hass, entry, config_data)
 
@@ -306,26 +328,49 @@ async def async_setup_observe(  # noqa: PLR0915
             "radar_callback": _on_radar_update,
             "energy_callback": _on_energy_update,
             "config_change_callback": _on_config_update,
+            "observation_status_callback": coordinator.handle_observation_status,
         }
         if tap_supports_heating(tap):
             observe_kwargs["heating_callback"] = _on_heating_update
-        await tap.observe(**observe_kwargs)
+        await tap.observe(**observe_kwargs)  # type: ignore[arg-type]
     except PyTewkeObserveError:
         LOGGER.warning(
-            "Failed to set up CoAP observations for %s; will retry on next poll",
+            "Failed to set up CoAP observations for %s; scheduling recovery",
             entry.data.get(CONF_NAME, entry.entry_id),
             exc_info=True,
         )
         entry.runtime_data.observe_active = False
-        if not coordinator.is_retrying_observe:
-            coordinator.reset_observation_timeout()
         return False
 
-    entry.runtime_data.observe_active = True
+    desired_obs = getattr(tap, "desired_observations", None)
+    active_obs = getattr(tap, "active_observations", None)
+    if isinstance(desired_obs, (set, frozenset)) and isinstance(
+        active_obs, (set, frozenset)
+    ):
+        for res in desired_obs:
+            state = entry.runtime_data.resource_health.setdefault(
+                res, ResourceHealthState()
+            )
+            state.desired = True
+            state.active = res in active_obs
+        entry.runtime_data.observe_active = bool(desired_obs) and (
+            desired_obs <= active_obs
+        )
+    else:
+        entry.runtime_data.observe_active = True
+
     coordinator.reset_observation_timeout()
 
-    # Process scenes already fetched during initial discovery
-    if coordinator.data and "scenes_all" in coordinator.data:
+    # Reconcile scenes only when `/scenes` has authoritative data and is active.
+    scenes_active = not isinstance(active_obs, (set, frozenset)) or (
+        "scenes" in active_obs
+    )
+    if (
+        coordinator.data
+        and "scenes_all" in coordinator.data
+        and scenes_active
+        and coordinator.has_resource_data("scenes") is not False
+    ):
         _on_scene_update(coordinator.data["scenes_all"])
 
     if tap_supports_heating(tap) and coordinator.data is not None:

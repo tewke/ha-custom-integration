@@ -44,6 +44,7 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
     """
 
     _attr_entity_registry_enabled_default = False
+    _resource_name = "targets"
 
     def __init__(self, coordinator: TewkeCoordinator, target: Target) -> None:
         """Initialise the target light."""
@@ -122,7 +123,6 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
                 target.is_on = tewke_brightness != 0
                 target.brightness = tewke_brightness
                 self.async_write_ha_state()
-            await self.coordinator.async_request_refresh()
         except PyTewkeInvalidWallDockError as e:
             LOGGER.error(
                 "Attempted to set Target %s while not connected to Wall Dock",
@@ -160,7 +160,6 @@ class TewkeTargetLight(TewkeEntity, LightEntity):
                 target.is_on = False
                 target.brightness = 0
                 self.async_write_ha_state()
-            await self.coordinator.async_request_refresh()
         except PyTewkeInvalidWallDockError as e:
             LOGGER.error(
                 "Attempted to set Target %s while not connected to Wall Dock",
